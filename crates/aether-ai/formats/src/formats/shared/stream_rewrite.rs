@@ -1,0 +1,1737 @@
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+
+use serde_json::{json, Map, Value};
+
+use crate::formats::openai::image::stream::{OpenAiImageChatStreamState, OpenAiImageStreamState};
+use crate::formats::openai::responses::history::ResponseHistoryRecord;
+use crate::formats::openai::responses::response::ensure_modern_openai_responses_response_fields;
+use crate::formats::shared::model_directives::model_directive_display_model_from_report_context;
+use crate::formats::shared::response::{
+    remove_empty_pages_from_tool_arguments, remove_empty_pages_from_tool_input_value,
+};
+use crate::formats::shared::sse::{encode_json_sse, SseRecordReader};
+use crate::formats::shared::stream_core::StreamingStandardFormatMatrix;
+use crate::formats::shared::sync_products::anthropic_legacy_compatibility_enabled;
+use crate::formats::shared::AiSurfaceFinalizeError;
+use crate::provider_compat::kiro_stream::KiroToClaudeCliStreamState;
+use crate::provider_compat::private_envelope::transform_provider_private_stream_line;
+use crate::provider_compat::surfaces::{
+    provider_adaptation_should_unwrap_stream_envelope, KIRO_ENVELOPE_NAME,
+};
+
+// A stream record can legitimately contain a large tool payload, but a peer
+// must not be able to keep the rewriter allocating forever by withholding the
+// record separator. This is a parser carry-buffer bound, not a response-body
+// or stream-concurrency limit.
+const MAX_STREAM_REWRITE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalizeStreamRewriteMode {
+    EnvelopeUnwrap,
+    ModelDirectiveDisplay,
+    OpenAiResponsesCompat,
+    OpenAiImage,
+    OpenAiImageToOpenAiChat,
+    ClaudeReadToolSanitize,
+    Standard,
+    KiroToClaudeCli,
+    KiroToClaudeCliThenStandard,
+}
+
+pub fn resolve_finalize_stream_rewrite_mode(
+    report_context: &Value,
+) -> Option<FinalizeStreamRewriteMode> {
+    let needs_conversion = report_context
+        .get("needs_conversion")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let envelope_name = report_context
+        .get("envelope_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let provider_api_format = report_context
+        .get("provider_api_format")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let provider_stream_event_api_format = report_context
+        .get("provider_stream_event_api_format")
+        .or_else(|| report_context.get("provider_stream_api_format"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| provider_api_format.clone());
+    let client_api_format = report_context
+        .get("client_api_format")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let stream_needs_conversion = needs_conversion
+        || !is_same_format_family(
+            provider_stream_event_api_format.as_str(),
+            client_api_format.as_str(),
+        );
+
+    if !needs_conversion
+        && client_consumes_same_private_stream_envelope(
+            report_context,
+            envelope_name.as_str(),
+            provider_api_format.as_str(),
+            client_api_format.as_str(),
+        )
+    {
+        return model_directive_display_model_from_report_context(report_context)
+            .map(|_| FinalizeStreamRewriteMode::ModelDirectiveDisplay);
+    }
+
+    if needs_conversion
+        && envelope_name.eq_ignore_ascii_case(KIRO_ENVELOPE_NAME)
+        && provider_api_format == "claude:messages"
+    {
+        return supports_standard_stream_rewrite(
+            provider_api_format.as_str(),
+            client_api_format.as_str(),
+        )
+        .then_some(FinalizeStreamRewriteMode::KiroToClaudeCliThenStandard);
+    }
+
+    if provider_api_format == "openai:image" && client_api_format == "openai:chat" {
+        return Some(FinalizeStreamRewriteMode::OpenAiImageToOpenAiChat);
+    }
+
+    if provider_api_format == "openai:image" && client_api_format == "openai:image" {
+        return Some(FinalizeStreamRewriteMode::OpenAiImage);
+    }
+
+    if stream_needs_conversion {
+        // CPA strategy: when provider and client share the same wire format
+        // (exact match or same family), pass through the stream verbatim.
+        // Parsing→rebuilding only adds overhead and may lose information
+        // (encrypted_content, original item IDs, etc.).
+        if is_same_format_family(
+            provider_stream_event_api_format.as_str(),
+            client_api_format.as_str(),
+        ) {
+            if is_openai_responses_family(provider_stream_event_api_format.as_str())
+                && is_openai_responses_family(client_api_format.as_str())
+            {
+                return Some(FinalizeStreamRewriteMode::OpenAiResponsesCompat);
+            }
+            if provider_stream_event_api_format == "claude:messages"
+                && client_api_format == "claude:messages"
+            {
+                return if anthropic_legacy_compatibility_enabled(report_context) {
+                    Some(FinalizeStreamRewriteMode::ClaudeReadToolSanitize)
+                } else {
+                    model_directive_display_model_from_report_context(report_context)
+                        .map(|_| FinalizeStreamRewriteMode::ModelDirectiveDisplay)
+                };
+            }
+            return model_directive_display_model_from_report_context(report_context)
+                .map(|_| FinalizeStreamRewriteMode::ModelDirectiveDisplay);
+        }
+        return supports_standard_stream_rewrite(
+            provider_stream_event_api_format.as_str(),
+            client_api_format.as_str(),
+        )
+        .then_some(FinalizeStreamRewriteMode::Standard);
+    }
+
+    if envelope_name.eq_ignore_ascii_case(KIRO_ENVELOPE_NAME) {
+        return (provider_api_format == "claude:messages"
+            && client_api_format == "claude:messages")
+            .then_some(FinalizeStreamRewriteMode::KiroToClaudeCli);
+    }
+
+    if model_directive_display_model_from_report_context(report_context).is_some()
+        && provider_stream_event_api_format == client_api_format
+        && is_standard_provider_api_format(provider_stream_event_api_format.as_str())
+        && !provider_adaptation_should_unwrap_stream_envelope(
+            envelope_name.as_str(),
+            provider_api_format.as_str(),
+        )
+    {
+        if provider_stream_event_api_format == "claude:messages" {
+            return Some(if anthropic_legacy_compatibility_enabled(report_context) {
+                FinalizeStreamRewriteMode::ClaudeReadToolSanitize
+            } else {
+                FinalizeStreamRewriteMode::ModelDirectiveDisplay
+            });
+        }
+        return Some(FinalizeStreamRewriteMode::ModelDirectiveDisplay);
+    }
+
+    if provider_stream_event_api_format == "claude:messages"
+        && client_api_format == "claude:messages"
+    {
+        return anthropic_legacy_compatibility_enabled(report_context)
+            .then_some(FinalizeStreamRewriteMode::ClaudeReadToolSanitize);
+    }
+
+    if is_same_format_family(
+        provider_stream_event_api_format.as_str(),
+        client_api_format.as_str(),
+    ) && is_openai_responses_family(provider_stream_event_api_format.as_str())
+        && is_openai_responses_family(client_api_format.as_str())
+    {
+        return Some(FinalizeStreamRewriteMode::OpenAiResponsesCompat);
+    }
+
+    (provider_api_format == client_api_format
+        && provider_adaptation_should_unwrap_stream_envelope(
+            envelope_name.as_str(),
+            provider_api_format.as_str(),
+        ))
+    .then_some(FinalizeStreamRewriteMode::EnvelopeUnwrap)
+}
+
+fn client_consumes_same_private_stream_envelope(
+    report_context: &Value,
+    envelope_name: &str,
+    provider_api_format: &str,
+    client_api_format: &str,
+) -> bool {
+    if envelope_name.is_empty()
+        || provider_api_format != client_api_format
+        || !provider_adaptation_should_unwrap_stream_envelope(envelope_name, provider_api_format)
+    {
+        return false;
+    }
+    report_context
+        .get("client_envelope_name")
+        .and_then(Value::as_str)
+        .is_some_and(|client_envelope_name| {
+            client_envelope_name.eq_ignore_ascii_case(envelope_name)
+        })
+}
+
+enum AiSurfaceStreamRewriteState {
+    EnvelopeUnwrap,
+    ModelDirectiveDisplay,
+    OpenAiResponsesCompat,
+    OpenAiImage(Box<OpenAiImageStreamState>),
+    OpenAiImageToOpenAiChat(Box<OpenAiImageChatStreamState>),
+    ClaudeReadToolSanitize(Box<ClaudeReadToolStreamSanitizer>),
+    Standard(Box<StreamingStandardFormatMatrix>),
+    KiroToClaudeCli(Box<KiroToClaudeCliStreamState>),
+    KiroToClaudeCliThenStandard {
+        kiro: Box<KiroToClaudeCliStreamState>,
+        standard: Box<StreamingStandardFormatMatrix>,
+    },
+}
+
+pub struct AiSurfaceStreamRewriter<'a> {
+    report_context: Cow<'a, Value>,
+    buffered: Vec<u8>,
+    records: SseRecordReader,
+    state: AiSurfaceStreamRewriteState,
+}
+
+pub fn maybe_build_ai_surface_stream_rewriter<'a>(
+    report_context: Option<&'a Value>,
+) -> Option<AiSurfaceStreamRewriter<'a>> {
+    let report_context = report_context?;
+    let state = match resolve_finalize_stream_rewrite_mode(report_context)? {
+        FinalizeStreamRewriteMode::EnvelopeUnwrap => AiSurfaceStreamRewriteState::EnvelopeUnwrap,
+        FinalizeStreamRewriteMode::ModelDirectiveDisplay => {
+            AiSurfaceStreamRewriteState::ModelDirectiveDisplay
+        }
+        FinalizeStreamRewriteMode::OpenAiResponsesCompat => {
+            AiSurfaceStreamRewriteState::OpenAiResponsesCompat
+        }
+        FinalizeStreamRewriteMode::OpenAiImage => {
+            AiSurfaceStreamRewriteState::OpenAiImage(Box::<OpenAiImageStreamState>::default())
+        }
+        FinalizeStreamRewriteMode::OpenAiImageToOpenAiChat => {
+            AiSurfaceStreamRewriteState::OpenAiImageToOpenAiChat(
+                Box::<OpenAiImageChatStreamState>::default(),
+            )
+        }
+        FinalizeStreamRewriteMode::ClaudeReadToolSanitize => {
+            AiSurfaceStreamRewriteState::ClaudeReadToolSanitize(
+                Box::<ClaudeReadToolStreamSanitizer>::default(),
+            )
+        }
+        FinalizeStreamRewriteMode::Standard => {
+            AiSurfaceStreamRewriteState::Standard(Box::<StreamingStandardFormatMatrix>::default())
+        }
+        FinalizeStreamRewriteMode::KiroToClaudeCli => AiSurfaceStreamRewriteState::KiroToClaudeCli(
+            Box::new(KiroToClaudeCliStreamState::new(report_context)),
+        ),
+        FinalizeStreamRewriteMode::KiroToClaudeCliThenStandard => {
+            AiSurfaceStreamRewriteState::KiroToClaudeCliThenStandard {
+                kiro: Box::new(KiroToClaudeCliStreamState::new(report_context)),
+                standard: Box::<StreamingStandardFormatMatrix>::default(),
+            }
+        }
+    };
+
+    Some(AiSurfaceStreamRewriter {
+        report_context: Cow::Borrowed(report_context),
+        buffered: Vec::new(),
+        records: SseRecordReader::new(MAX_STREAM_REWRITE_BUFFER_BYTES).including_empty_records(),
+        state,
+    })
+}
+
+impl AiSurfaceStreamRewriter<'_> {
+    /// Move parser state across task boundaries without replaying captured bytes.
+    pub fn into_owned(self) -> AiSurfaceStreamRewriter<'static> {
+        AiSurfaceStreamRewriter {
+            report_context: Cow::Owned(self.report_context.into_owned()),
+            buffered: self.buffered,
+            records: self.records,
+            state: self.state,
+        }
+    }
+
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        match &mut self.state {
+            AiSurfaceStreamRewriteState::OpenAiImage(state) => {
+                state.push_chunk(self.report_context.as_ref(), chunk)
+            }
+            AiSurfaceStreamRewriteState::OpenAiImageToOpenAiChat(state) => {
+                state.push_chunk(self.report_context.as_ref(), chunk)
+            }
+            AiSurfaceStreamRewriteState::ClaudeReadToolSanitize(state) => {
+                state.push_chunk(self.report_context.as_ref(), chunk)
+            }
+            AiSurfaceStreamRewriteState::KiroToClaudeCli(state) => {
+                state.push_chunk(self.report_context.as_ref(), chunk)
+            }
+            AiSurfaceStreamRewriteState::KiroToClaudeCliThenStandard { kiro, standard } => {
+                let claude_bytes = kiro.push_chunk(self.report_context.as_ref(), chunk)?;
+                transform_standard_bytes(
+                    &mut self.records,
+                    standard,
+                    self.report_context.as_ref(),
+                    &claude_bytes,
+                )
+            }
+            AiSurfaceStreamRewriteState::Standard(standard) => transform_standard_bytes(
+                &mut self.records,
+                standard,
+                self.report_context.as_ref(),
+                chunk,
+            ),
+            AiSurfaceStreamRewriteState::EnvelopeUnwrap
+            | AiSurfaceStreamRewriteState::ModelDirectiveDisplay
+            | AiSurfaceStreamRewriteState::OpenAiResponsesCompat => {
+                let mut output = Vec::new();
+                let mut remaining = chunk;
+                while !remaining.is_empty() {
+                    let before = remaining;
+                    let record = self.records.next_record(&mut remaining).transpose()
+                        .map_err(|_| AiSurfaceFinalizeError::new(format!("stream rewrite buffer exceeds {MAX_STREAM_REWRITE_BUFFER_BYTES} bytes")))?;
+                    self.buffered
+                        .extend_from_slice(&before[..before.len() - remaining.len()]);
+                    if let Some(record) = record {
+                        output.extend(self.rewrite_record(record)?);
+                    }
+                }
+                Ok(output)
+            }
+        }
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        match &mut self.state {
+            AiSurfaceStreamRewriteState::OpenAiImage(state) => {
+                state.finish(self.report_context.as_ref())
+            }
+            AiSurfaceStreamRewriteState::OpenAiImageToOpenAiChat(state) => {
+                state.finish(self.report_context.as_ref())
+            }
+            AiSurfaceStreamRewriteState::ClaudeReadToolSanitize(state) => {
+                state.finish(self.report_context.as_ref())
+            }
+            AiSurfaceStreamRewriteState::KiroToClaudeCli(state) => {
+                state.finish(self.report_context.as_ref())
+            }
+            AiSurfaceStreamRewriteState::KiroToClaudeCliThenStandard { kiro, standard } => {
+                let mut output = transform_standard_bytes(
+                    &mut self.records,
+                    standard,
+                    self.report_context.as_ref(),
+                    &kiro.finish(self.report_context.as_ref())?,
+                )?;
+                output.extend(finish_standard_records(
+                    &mut self.records,
+                    standard,
+                    self.report_context.as_ref(),
+                )?);
+                Ok(output)
+            }
+            AiSurfaceStreamRewriteState::Standard(standard) => {
+                finish_standard_records(&mut self.records, standard, self.report_context.as_ref())
+            }
+            AiSurfaceStreamRewriteState::EnvelopeUnwrap
+            | AiSurfaceStreamRewriteState::ModelDirectiveDisplay
+            | AiSurfaceStreamRewriteState::OpenAiResponsesCompat => {
+                if let Some(record) = self.records.finish() {
+                    self.rewrite_record(record)
+                } else {
+                    Ok(std::mem::take(&mut self.buffered))
+                }
+            }
+        }
+    }
+
+    pub fn take_response_history_record(&mut self) -> Option<ResponseHistoryRecord> {
+        match &mut self.state {
+            AiSurfaceStreamRewriteState::Standard(state) => state.take_response_history_record(),
+            AiSurfaceStreamRewriteState::KiroToClaudeCliThenStandard { standard, .. } => {
+                standard.take_response_history_record()
+            }
+            _ => None,
+        }
+    }
+
+    fn rewrite_record(
+        &mut self,
+        record: crate::formats::shared::sse::SseRecord,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        let raw = std::mem::take(&mut self.buffered);
+        if record.event.as_deref() == Some("error")
+            && matches!(self.state, AiSurfaceStreamRewriteState::EnvelopeUnwrap)
+        {
+            return Ok(raw);
+        }
+        let Some(line) = record.into_data_line() else {
+            return Ok(raw);
+        };
+        let rewritten = match &mut self.state {
+            AiSurfaceStreamRewriteState::EnvelopeUnwrap => {
+                let output = transform_provider_private_stream_line(
+                    self.report_context.as_ref(),
+                    line.clone(),
+                )
+                .map_err(AiSurfaceFinalizeError::from)?;
+                rewrite_model_directive_stream_line(self.report_context.as_ref(), output)
+            }
+            AiSurfaceStreamRewriteState::ModelDirectiveDisplay => {
+                rewrite_model_directive_stream_line(self.report_context.as_ref(), line.clone())
+            }
+            AiSurfaceStreamRewriteState::OpenAiResponsesCompat => {
+                rewrite_openai_responses_compat_stream_line(
+                    self.report_context.as_ref(),
+                    line.clone(),
+                )
+            }
+            _ => return Ok(raw),
+        }?;
+        if rewritten.trim_ascii_end() == line.trim_ascii_end() {
+            return Ok(raw);
+        }
+        Ok(replace_record_data(&raw, rewritten.trim_ascii_end()))
+    }
+}
+
+/// Keep comments, event/id/retry fields and the original line terminators.
+/// The changed JSON fits on one data line, replacing all the source data lines.
+fn replace_record_data(mut raw: &[u8], data_line: &[u8]) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut replaced = false;
+    while !raw.is_empty() {
+        let end = raw
+            .iter()
+            .position(|b| matches!(b, b'\r' | b'\n'))
+            .unwrap_or(raw.len());
+        let (line, suffix) = raw.split_at(end);
+        let width = if suffix.starts_with(b"\r\n") {
+            2
+        } else {
+            usize::from(!suffix.is_empty())
+        };
+        if line == b"data" || line.starts_with(b"data:") {
+            if !replaced {
+                output.extend_from_slice(data_line);
+                output.extend_from_slice(&suffix[..width]);
+                replaced = true;
+            }
+        } else {
+            output.extend_from_slice(&raw[..end + width]);
+        }
+        raw = &suffix[width..];
+    }
+    output
+}
+
+#[derive(Default)]
+struct ClaudeReadToolBlockState {
+    name: String,
+    buffered_input_json: String,
+}
+
+#[derive(Default)]
+struct ClaudeReadToolStreamSanitizer {
+    buffered: Vec<u8>,
+    blocks: BTreeMap<usize, ClaudeReadToolBlockState>,
+}
+
+impl ClaudeReadToolStreamSanitizer {
+    fn push_chunk(
+        &mut self,
+        report_context: &Value,
+        chunk: &[u8],
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        append_bounded_stream_rewrite_chunk(&mut self.buffered, chunk)?;
+        let mut output = Vec::new();
+        while let Some(record) = drain_next_sse_record(&mut self.buffered) {
+            output.extend(self.transform_record(report_context, record)?);
+        }
+        Ok(output)
+    }
+
+    fn finish(&mut self, report_context: &Value) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        if self.buffered.is_empty() {
+            return Ok(Vec::new());
+        }
+        let record = std::mem::take(&mut self.buffered);
+        self.transform_record(report_context, record)
+    }
+
+    fn transform_record(
+        &mut self,
+        report_context: &Value,
+        record: Vec<u8>,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        let Some((event, mut payload)) = parse_sse_record_json(&record) else {
+            return rewrite_model_directive_stream_record(report_context, record);
+        };
+        let event_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or(event.as_deref().unwrap_or_default())
+            .to_string();
+        let mut output = match event_type.as_str() {
+            "content_block_start" => {
+                self.transform_content_block_start(event.as_deref(), payload, record)?
+            }
+            "content_block_delta" => self.transform_content_block_delta(payload, record)?,
+            "content_block_stop" => self.transform_content_block_stop(payload, record)?,
+            _ => {
+                if !rewrite_stream_payload_model_from_context(report_context, &mut payload) {
+                    return Ok(record);
+                }
+                encode_json_sse(event.as_deref(), &payload)?
+            }
+        };
+        if model_directive_display_model_from_report_context(report_context).is_some()
+            && !matches!(event_type.as_str(), "message_start" | "message_delta")
+        {
+            output = rewrite_model_directive_stream_record(report_context, output)?;
+        }
+        Ok(output)
+    }
+
+    fn transform_content_block_start(
+        &mut self,
+        event: Option<&str>,
+        mut payload: Value,
+        original_record: Vec<u8>,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        let index = payload
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(0);
+        let Some(block) = payload
+            .get_mut("content_block")
+            .and_then(Value::as_object_mut)
+        else {
+            return Ok(original_record);
+        };
+        let block_type = block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if block_type != "tool_use" {
+            return Ok(original_record);
+        }
+        let name = block
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.blocks.insert(
+            index,
+            ClaudeReadToolBlockState {
+                name: name.clone(),
+                buffered_input_json: String::new(),
+            },
+        );
+        if sanitize_claude_tool_input_object(block, &name) {
+            encode_json_sse(event, &payload)
+        } else {
+            Ok(original_record)
+        }
+    }
+
+    fn transform_content_block_delta(
+        &mut self,
+        payload: Value,
+        original_record: Vec<u8>,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        let index = payload
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(0);
+        let delta_type = payload
+            .get("delta")
+            .and_then(Value::as_object)
+            .and_then(|delta| delta.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let partial_json = payload
+            .get("delta")
+            .and_then(Value::as_object)
+            .and_then(|delta| delta.get("partial_json"))
+            .and_then(Value::as_str);
+        if delta_type != "input_json_delta" {
+            return Ok(original_record);
+        }
+        let Some(state) = self.blocks.get_mut(&index) else {
+            return Ok(original_record);
+        };
+        if state.name != "Read" {
+            return Ok(original_record);
+        }
+        if let Some(partial_json) = partial_json {
+            let next_len = state
+                .buffered_input_json
+                .len()
+                .checked_add(partial_json.len())
+                .ok_or_else(|| {
+                    AiSurfaceFinalizeError::new("stream rewrite tool input buffer length overflow")
+                })?;
+            if next_len > MAX_STREAM_REWRITE_BUFFER_BYTES {
+                return Err(AiSurfaceFinalizeError::new(format!(
+                    "stream rewrite tool input buffer exceeds {MAX_STREAM_REWRITE_BUFFER_BYTES} bytes"
+                )));
+            }
+            state.buffered_input_json.push_str(partial_json);
+        }
+        Ok(Vec::new())
+    }
+
+    fn transform_content_block_stop(
+        &mut self,
+        payload: Value,
+        original_record: Vec<u8>,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        let index = payload
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(0);
+        let Some(state) = self.blocks.remove(&index) else {
+            return Ok(original_record);
+        };
+        let mut output = Vec::new();
+        if state.name == "Read" && !state.buffered_input_json.is_empty() {
+            let partial_json =
+                remove_empty_pages_from_tool_arguments("Read", &state.buffered_input_json);
+            if !partial_json.is_empty() {
+                output.extend(encode_json_sse(
+                    Some("content_block_delta"),
+                    &json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": partial_json,
+                        }
+                    }),
+                )?);
+            }
+        }
+        if output.is_empty() {
+            output = original_record;
+        } else {
+            output.extend(original_record);
+        }
+        Ok(output)
+    }
+}
+
+fn append_bounded_stream_rewrite_chunk(
+    buffered: &mut Vec<u8>,
+    chunk: &[u8],
+) -> Result<(), AiSurfaceFinalizeError> {
+    let next_len = buffered
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| AiSurfaceFinalizeError::new("stream rewrite buffer length overflow"))?;
+    if next_len > MAX_STREAM_REWRITE_BUFFER_BYTES {
+        return Err(AiSurfaceFinalizeError::new(format!(
+            "stream rewrite buffer exceeds {MAX_STREAM_REWRITE_BUFFER_BYTES} bytes"
+        )));
+    }
+    buffered.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn sanitize_claude_tool_input_object(block: &mut Map<String, Value>, name: &str) -> bool {
+    let Some(input) = block.get("input") else {
+        return false;
+    };
+    let sanitized = remove_empty_pages_from_tool_input_value(name, input);
+    if sanitized == *input {
+        return false;
+    }
+    block.insert("input".to_string(), sanitized);
+    true
+}
+
+fn drain_next_sse_record(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let mut line_start = 0usize;
+    let mut index = 0usize;
+    while index < buffer.len() {
+        if buffer[index] != b'\n' {
+            index += 1;
+            continue;
+        }
+        let line_end = index + 1;
+        let line = &buffer[line_start..line_end];
+        let line_without_newline = line
+            .strip_suffix(b"\n")
+            .unwrap_or(line)
+            .strip_suffix(b"\r")
+            .unwrap_or_else(|| line.strip_suffix(b"\n").unwrap_or(line));
+        if line_without_newline.is_empty() {
+            return Some(buffer.drain(..line_end).collect());
+        }
+        line_start = line_end;
+        index = line_end;
+    }
+    None
+}
+
+fn parse_sse_record_json(record: &[u8]) -> Option<(Option<String>, Value)> {
+    let text = std::str::from_utf8(record).ok()?;
+    let mut event = None;
+    let mut data = String::new();
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(value) = line.strip_prefix("event:") {
+            event = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        }
+    }
+    if data.trim().is_empty() || data.trim() == "[DONE]" {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(data.trim()).ok()?;
+    Some((event, value))
+}
+
+fn rewrite_model_directive_stream_record(
+    report_context: &Value,
+    record: Vec<u8>,
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let mut output = Vec::new();
+    for line in record.split_inclusive(|byte| *byte == b'\n') {
+        output.extend(rewrite_model_directive_stream_line(
+            report_context,
+            line.to_vec(),
+        )?);
+    }
+    Ok(output)
+}
+
+fn rewrite_model_directive_stream_line(
+    report_context: &Value,
+    line: Vec<u8>,
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let Some(display_model) = model_directive_display_model_from_report_context(report_context)
+    else {
+        return Ok(line);
+    };
+    let text = match std::str::from_utf8(&line) {
+        Ok(text) => text,
+        Err(_) => return Ok(line),
+    };
+    let trimmed_line_end = text.trim_end_matches(['\r', '\n']);
+    let trailing = &text[trimmed_line_end.len()..];
+    let Some((prefix, payload)) = trimmed_line_end.split_once(':') else {
+        return Ok(line);
+    };
+    if prefix.trim() != "data" {
+        return Ok(line);
+    }
+    let payload = payload.trim_start();
+    if payload.is_empty() || payload == "[DONE]" {
+        return Ok(line);
+    }
+    let mut value = match serde_json::from_str::<Value>(payload) {
+        Ok(value) => value,
+        Err(_) => return Ok(line),
+    };
+    if !rewrite_stream_payload_model(&mut value, &display_model) {
+        return Ok(line);
+    }
+    let mut output = Vec::new();
+    output.extend_from_slice(b"data: ");
+    output.extend(serde_json::to_vec(&value)?);
+    output.extend_from_slice(trailing.as_bytes());
+    Ok(output)
+}
+
+fn rewrite_openai_responses_compat_stream_line(
+    report_context: &Value,
+    line: Vec<u8>,
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let text = match std::str::from_utf8(&line) {
+        Ok(text) => text,
+        Err(_) => return Ok(line),
+    };
+    let trimmed_line_end = text.trim_end_matches(['\r', '\n']);
+    let trailing = &text[trimmed_line_end.len()..];
+    let Some((prefix, payload)) = trimmed_line_end.split_once(':') else {
+        return Ok(line);
+    };
+    if prefix.trim() != "data" {
+        return Ok(line);
+    }
+    let payload = payload.trim_start();
+    if payload.is_empty() || payload == "[DONE]" {
+        return Ok(line);
+    }
+    let mut value = match serde_json::from_str::<Value>(payload) {
+        Ok(value) => value,
+        Err(_) => return Ok(line),
+    };
+    let mut changed = rewrite_stream_payload_model_from_context(report_context, &mut value);
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if matches!(event_type, "response.completed" | "response.done") {
+        if let Some(response) = value.get_mut("response").and_then(Value::as_object_mut) {
+            changed |= ensure_modern_openai_responses_response_fields(response);
+        }
+    }
+    if !changed {
+        return Ok(line);
+    }
+    let mut output = Vec::new();
+    output.extend_from_slice(b"data: ");
+    output.extend(serde_json::to_vec(&value)?);
+    output.extend_from_slice(trailing.as_bytes());
+    Ok(output)
+}
+
+fn rewrite_stream_payload_model(value: &mut Value, display_model: &str) -> bool {
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for key in ["model", "modelVersion"] {
+        if object.get(key).and_then(Value::as_str).is_some() {
+            object.insert(key.to_string(), Value::String(display_model.to_string()));
+            changed = true;
+        }
+    }
+    for key in ["response", "message"] {
+        if let Some(nested) = object.get_mut(key) {
+            changed |= rewrite_stream_payload_model(nested, display_model);
+        }
+    }
+    changed
+}
+
+fn rewrite_stream_payload_model_from_context(report_context: &Value, value: &mut Value) -> bool {
+    let Some(display_model) = model_directive_display_model_from_report_context(report_context)
+    else {
+        return false;
+    };
+    rewrite_stream_payload_model(value, &display_model)
+}
+
+fn transform_standard_bytes(
+    reader: &mut SseRecordReader,
+    standard: &mut StreamingStandardFormatMatrix,
+    report_context: &Value,
+    mut bytes: &[u8],
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let mut output = Vec::new();
+    while let Some(record) = reader.next_record(&mut bytes) {
+        let record = record.map_err(|_| {
+            AiSurfaceFinalizeError::new(format!(
+                "stream rewrite buffer exceeds {MAX_STREAM_REWRITE_BUFFER_BYTES} bytes"
+            ))
+        })?;
+        if let Some(line) = record.into_data_line() {
+            output.extend(transform_standard_line(standard, report_context, line)?);
+        }
+    }
+    Ok(output)
+}
+
+fn finish_standard_records(
+    reader: &mut SseRecordReader,
+    standard: &mut StreamingStandardFormatMatrix,
+    report_context: &Value,
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let mut output = Vec::new();
+    if let Some(line) = reader.finish().and_then(|record| record.into_data_line()) {
+        output.extend(transform_standard_line(standard, report_context, line)?);
+    }
+    output.extend(standard.finish(report_context)?);
+    Ok(output)
+}
+
+fn transform_standard_line(
+    standard: &mut StreamingStandardFormatMatrix,
+    report_context: &Value,
+    line: Vec<u8>,
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let line = if should_unwrap_envelope(report_context) {
+        transform_provider_private_stream_line(report_context, line)?
+    } else {
+        line
+    };
+    if line.is_empty() {
+        return Ok(Vec::new());
+    }
+    standard.transform_line(report_context, line)
+}
+
+fn should_unwrap_envelope(report_context: &Value) -> bool {
+    let envelope_name = report_context
+        .get("envelope_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let provider_api_format = report_context
+        .get("provider_api_format")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    provider_adaptation_should_unwrap_stream_envelope(envelope_name, provider_api_format)
+}
+
+fn supports_standard_stream_rewrite(provider_api_format: &str, client_api_format: &str) -> bool {
+    is_standard_provider_api_format(provider_api_format)
+        && (is_standard_chat_client_api_format(client_api_format)
+            || is_standard_cli_client_api_format(client_api_format))
+}
+
+/// Returns true for OpenAI Responses family formats that share the same SSE
+/// wire format and can be passed through without parsing→rebuilding.
+fn is_openai_responses_family(api_format: &str) -> bool {
+    matches!(
+        aether_ai_formats::normalize_api_format_alias(api_format).as_str(),
+        "openai:responses" | "openai:responses:compact"
+    )
+}
+
+/// Returns true when two API formats share the same SSE wire format and
+/// can be passed through without parsing→rebuilding.  This covers:
+///
+/// - Exact matches after normalisation (e.g. `claude:messages` ↔ `claude:messages`)
+/// - OpenAI Responses family (`openai:responses` ↔ `openai:responses:compact`)
+fn is_same_format_family(provider_format: &str, client_format: &str) -> bool {
+    let provider = aether_ai_formats::normalize_api_format_alias(provider_format);
+    let client = aether_ai_formats::normalize_api_format_alias(client_format);
+    if provider == client {
+        return true;
+    }
+    // OpenAI Responses family shares the same wire format despite having
+    // distinct format IDs.
+    is_openai_responses_family(provider_format) && is_openai_responses_family(client_format)
+}
+
+fn is_standard_provider_api_format(api_format: &str) -> bool {
+    matches!(
+        aether_ai_formats::normalize_api_format_alias(api_format).as_str(),
+        "openai:chat"
+            | "openai:responses"
+            | "openai:responses:compact"
+            | "claude:messages"
+            | "gemini:generate_content"
+    )
+}
+
+fn is_standard_chat_client_api_format(api_format: &str) -> bool {
+    matches!(
+        api_format,
+        "openai:chat" | "claude:messages" | "gemini:generate_content"
+    )
+}
+
+fn is_standard_cli_client_api_format(api_format: &str) -> bool {
+    matches!(
+        aether_ai_formats::normalize_api_format_alias(api_format).as_str(),
+        "openai:responses"
+            | "openai:responses:compact"
+            | "claude:messages"
+            | "gemini:generate_content"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::{
+        maybe_build_ai_surface_stream_rewriter, resolve_finalize_stream_rewrite_mode,
+        FinalizeStreamRewriteMode,
+    };
+
+    #[test]
+    fn resolves_standard_mode_for_cross_format_standard_streams() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "openai:chat",
+            "needs_conversion": true,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::Standard)
+        );
+    }
+
+    #[test]
+    fn resolves_envelope_unwrap_for_same_format_private_envelopes() {
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "gemini:generate_content",
+            "envelope_name": "antigravity:v1internal",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::EnvelopeUnwrap)
+        );
+    }
+
+    #[test]
+    fn resolves_no_rewriter_when_client_consumes_same_private_envelope() {
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "gemini:generate_content",
+            "envelope_name": "antigravity:v1internal",
+            "client_envelope_name": "antigravity:v1internal",
+            "needs_conversion": false,
+        });
+        assert_eq!(resolve_finalize_stream_rewrite_mode(&report_context), None);
+        assert!(maybe_build_ai_surface_stream_rewriter(Some(&report_context)).is_none());
+    }
+
+    #[test]
+    fn native_private_envelope_client_keeps_response_wrapper_for_model_display_rewrite() {
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "gemini:generate_content",
+            "envelope_name": "antigravity:v1internal",
+            "client_envelope_name": "antigravity:v1internal",
+            "model": "gemini-2.5-pro-high",
+            "mapped_model": "gemini-2.5-pro",
+            "needs_conversion": false,
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("display-model rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"data: {\"response\":{\"modelVersion\":\"gemini-2.5-pro\",\"candidates\":[]},\"responseId\":\"resp_native_123\"}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"response\":"));
+        assert!(output.contains("\"responseId\":\"resp_native_123\""));
+        assert!(output.contains("\"modelVersion\":\"gemini-2.5-pro-high\""));
+        assert!(!output.contains("_v1internal_response_id"));
+    }
+
+    #[test]
+    fn resolves_kiro_same_format_streams_to_kiro_mode() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "envelope_name": "kiro:generateAssistantResponse",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::KiroToClaudeCli)
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_non_conversion_streams() {
+        let report_context = json!({
+            "provider_api_format": "openai:chat",
+            "client_api_format": "openai:chat",
+            "needs_conversion": false,
+        });
+        assert_eq!(resolve_finalize_stream_rewrite_mode(&report_context), None);
+    }
+
+    #[test]
+    fn resolves_model_directive_display_mode_for_same_format_standard_streams() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "model": "gpt-5.5-xhigh",
+            "mapped_model": "gpt-5.5",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::ModelDirectiveDisplay)
+        );
+    }
+
+    #[test]
+    fn model_directive_display_mode_does_not_displace_kiro_stream_bridge() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "envelope_name": "kiro:generateAssistantResponse",
+            "model": "claude-sonnet-4.5-high",
+            "mapped_model": "claude-sonnet-4.5",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::KiroToClaudeCli)
+        );
+    }
+
+    #[test]
+    fn envelope_unwrap_rewriter_restores_model_directive_display_model() {
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "gemini:generate_content",
+            "envelope_name": "gemini_cli:v1internal",
+            "model": "gemini-2.5-pro-high",
+            "mapped_model": "gemini-2.5-pro",
+            "needs_conversion": false,
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"data: {\"response\":{\"modelVersion\":\"gemini-2.5-pro\",\"candidates\":[]}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"modelVersion\":\"gemini-2.5-pro-high\""));
+        assert!(!output.contains("\"modelVersion\":\"gemini-2.5-pro\""));
+    }
+
+    #[test]
+    fn model_directive_display_rewriter_restores_response_model() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "model": "gpt-5.5-xhigh",
+            "mapped_model": "gpt-5.5",
+            "needs_conversion": false,
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\"}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("event: response.created"));
+        assert!(output.contains("\"model\":\"gpt-5.5-xhigh\""));
+        assert!(!output.contains("\"model\":\"gpt-5.5\""));
+    }
+
+    #[test]
+    fn owned_handoff_preserves_partial_utf8_and_conversion_state() {
+        for client in ["openai:responses", "openai:chat"] {
+            let text = "界".repeat(12_000);
+            let delta = format!(
+                "data: {}\n\n",
+                json!({
+                    "type":"response.output_text.delta", "response_id":"resp_handoff",
+                    "item_id":"msg_handoff", "output_index":0, "content_index":0, "delta":text,
+                })
+            );
+            let split = delta.find('界').unwrap() + 17_002;
+            assert!(!delta.is_char_boundary(split));
+            let (mut owned, mut output) = {
+                let context = json!({"provider_api_format":"openai:responses",
+                    "client_api_format":client, "needs_conversion":client == "openai:chat"});
+                let mut parser = maybe_build_ai_surface_stream_rewriter(Some(&context)).unwrap();
+                let output = parser.push_chunk(&delta.as_bytes()[..split]).unwrap();
+                (parser.into_owned(), output)
+            };
+            output.extend(owned.push_chunk(&delta.as_bytes()[split..]).unwrap());
+            output.extend(owned.finish().unwrap());
+            let output = String::from_utf8(output).unwrap();
+            let events: Vec<Value> = output
+                .lines()
+                .filter_map(|l| l.strip_prefix("data: "))
+                .filter(|p| *p != "[DONE]")
+                .map(|p| serde_json::from_str(p).unwrap())
+                .collect();
+            let recovered: String = events
+                .iter()
+                .filter_map(|e| {
+                    if client == "openai:responses" {
+                        e["delta"].as_str()
+                    } else {
+                        e.pointer("/choices/0/delta/content")
+                            .and_then(Value::as_str)
+                    }
+                })
+                .collect();
+            assert_eq!(recovered, text);
+        }
+    }
+
+    #[test]
+    fn standard_rewriter_converts_openai_responses_reasoning_delta_to_chat() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:chat",
+            "needs_conversion": true,
+            "mapped_model": "gpt-5.4",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: response.reasoning_summary_text.delta\n\
+data: {\"type\":\"response.reasoning_summary_text.delta\",\"response_id\":\"resp_reasoning_stream_123\",\"item_id\":\"rs_123\",\"output_index\":0,\"summary_index\":0,\"delta\":\"Need to inspect first.\"}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(output.contains("\"reasoning_content\":\"Need to inspect first.\""));
+        assert!(!output.contains("\"content\""));
+        assert!(!output.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn multiline_chat_body_reaches_claude_before_its_message_stop() {
+        let ctx = json!({"provider_api_format":"openai:chat","client_api_format":"claude:messages","needs_conversion":true});
+        let wire = b"data: {\"choices\":[{\"delta\":\r\ndata: {\"content\":\"BODY\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&ctx)).unwrap();
+        let mut output = Vec::new();
+        for chunk in wire.chunks(5) {
+            output.extend(rewriter.push_chunk(chunk).unwrap());
+        }
+        output.extend(rewriter.finish().unwrap());
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("\"text\":\"BODY\"").count(), 1);
+        assert!(output.find("BODY").unwrap() < output.find("event: message_stop").unwrap());
+    }
+
+    #[test]
+    fn model_directive_adapter_keeps_nondata_bytes_when_rewriting_multiline_records() {
+        let ctx = json!({"provider_api_format":"openai:chat","client_api_format":"openai:chat",
+            "model":"gpt-5.5-xhigh","mapped_model":"gpt-5.5","needs_conversion":false});
+        let unchanged =
+            ": heartbeat\r\n\r\nevent: extension\r\ndata: {\r\nid: a\r\ndata: \"extra\":1}\r\n\r\n";
+        let changed =
+            "id: b\r\ndata: {\r\n:mid\r\ndata: \"model\":\"gpt-5.5\"}\r\nretry: 5\r\n\r\n";
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&ctx)).unwrap();
+        let mut output = Vec::new();
+        for chunk in [unchanged, changed].concat().as_bytes().chunks(1) {
+            output.extend(rewriter.push_chunk(chunk).unwrap());
+        }
+        output.extend(rewriter.finish().unwrap());
+        assert_eq!(String::from_utf8(output).unwrap(),format!("{unchanged}id: b\r\ndata: {{\"model\":\"gpt-5.5-xhigh\"}}\r\n:mid\r\nretry: 5\r\n\r\n"));
+    }
+
+    #[test]
+    fn standard_rewriter_converts_split_multiline_responses_delta() {
+        let ctx = json!({"provider_api_format":"openai:responses","client_api_format":"openai:chat","needs_conversion":true});
+        let wire = b"event: response.output_text.delta\r\ndata: {\"response_id\":\"r\",\r\ndata: \"delta\":\"visible\"}\r\n\r\nevent: response.completed\r\ndata: {\"response\":{\"id\":\"r\",\"status\":\"completed\"}}";
+        for width in [1, 7, wire.len()] {
+            let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&ctx)).unwrap();
+            let mut bytes = Vec::new();
+            for chunk in wire.chunks(width) {
+                bytes.extend(rewriter.push_chunk(chunk).unwrap());
+            }
+            bytes.extend(rewriter.finish().unwrap());
+            let output = String::from_utf8(bytes).unwrap();
+            assert_eq!(
+                output.matches("\"content\":\"visible\"").count(),
+                1,
+                "{output}"
+            );
+            assert!(output.contains("[DONE]"), "{output}");
+            assert!(!output.contains("stream_terminal_error"), "{output}");
+        }
+    }
+
+    #[test]
+    fn standard_rewriter_converts_event_only_response_created_to_chat_role_chunk() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:chat",
+            "needs_conversion": true,
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let event_output = rewriter
+            .push_chunk(b"event: response.created\n")
+            .expect("event line should be buffered");
+        assert!(event_output.is_empty());
+        let output = rewriter
+            .push_chunk(
+                b"data: {\"response\":{\"id\":\"resp_created_123\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(output.contains("\"id\":\"resp_created_123\""));
+        assert!(output.contains("\"model\":\"gpt-5.4\""));
+        assert!(output.contains("\"delta\":{\"role\":\"assistant\"}"));
+    }
+
+    #[test]
+    fn explicit_responses_stream_format_preserves_function_call_metadata() {
+        let report_context = json!({
+            "provider_api_format": "openai:chat",
+            "provider_stream_event_api_format": "openai:responses",
+            "client_api_format": "openai:responses",
+            "needs_conversion": true,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::OpenAiResponsesCompat)
+        );
+
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("responses compat rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_chat_metadata_123\",\"call_id\":\"call_chat_metadata_123\",\"status\":\"completed\",\"arguments\":\"{}\",\"name\":\"lookup\",\"metadata\":{\"source\":\"chat\"},\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn_123\"}}}\n\n",
+            )
+            .expect("responses event should pass through");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("event: response.output_item.added"));
+        assert!(output.contains("\"metadata\":{\"source\":\"chat\"}"));
+        assert!(output
+            .contains("\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn_123\"}"));
+    }
+
+    #[test]
+    fn explicit_responses_stream_format_converts_to_chat_even_without_request_conversion() {
+        let report_context = json!({
+            "provider_api_format": "openai:chat",
+            "provider_stream_event_api_format": "openai:responses",
+            "client_api_format": "openai:chat",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::Standard)
+        );
+
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("standard rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_chat_metadata_123\",\"call_id\":\"call_chat_metadata_123\",\"status\":\"completed\",\"arguments\":\"{}\",\"name\":\"lookup\",\"metadata\":{\"source\":\"chat\"},\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn_123\"}}}\n\n",
+            )
+            .expect("responses event should convert to chat");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(output.contains("\"id\":\"call_chat_metadata_123\""));
+        assert!(!output.contains("unsupported_stream_event"));
+    }
+
+    #[test]
+    fn same_family_responses_passthrough_preserves_encrypted_content() {
+        // When provider and client are both OpenAI Responses family,
+        // the stream should pass through verbatim (only model name rewrite).
+        // This preserves encrypted_content, original item IDs, etc.
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses:compact",
+            "needs_conversion": true,
+            "model": "gpt-5.5-xhigh",
+            "mapped_model": "gpt-5.5",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: response.output_item.added\n\
+data: {\"type\":\"response.output_item.added\",\"response_id\":\"resp_123\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_abc\",\"summary\":[],\"encrypted_content\":\"EWxvY2tlZENvbnRlbnQ=\"}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        // Passthrough preserves the full payload structure
+        assert!(output.contains("event: response.output_item.added"));
+        assert!(output.contains("\"encrypted_content\":\"EWxvY2tlZENvbnRlbnQ=\""));
+        assert!(output.contains("\"id\":\"rs_abc\""));
+        assert!(output.contains("\"type\":\"reasoning\""));
+    }
+
+    #[test]
+    fn same_family_responses_without_display_model_runs_terminal_compat_only() {
+        let report_context = json!({
+            "provider_api_format": "openai:responses",
+            "client_api_format": "openai:responses:compact",
+            "needs_conversion": true,
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("responses compat rewriter should exist");
+        let mut output = rewriter
+            .push_chunk(
+                b"event: response.output_item.added\n\
+data: {\"type\":\"response.output_item.added\",\"response_id\":\"resp_123\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_abc\",\"encrypted_content\":\"EWxvY2tlZA==\"}}\n\n",
+            )
+            .expect("non-terminal event should pass through");
+        output.extend(
+            rewriter
+                .push_chunk(
+                    b"event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"object\":\"response\",\"model\":\"gpt-5\",\"status\":\"completed\"}}\n\n",
+                )
+                .expect("terminal event should be normalized"),
+        );
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"encrypted_content\":\"EWxvY2tlZA==\""));
+        assert!(output.contains("event: response.completed"));
+        assert!(output.contains("\"output\":[]"));
+        assert!(output.contains("\"output_text\":\"\""));
+        assert!(output.contains("\"completed_at\":"));
+    }
+
+    #[test]
+    fn same_format_claude_passthrough_with_display_model() {
+        // Claude→Claude with needs_conversion=true should pass through
+        // (only model name rewrite), not parse→rebuild.
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": true,
+            "model": "claude-sonnet-4.5-high",
+            "mapped_model": "claude-sonnet-4.5",
+            "provider_type": "claude_code",
+            "anthropic_compatibility_profile": "native_transparent",
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::ModelDirectiveDisplay)
+        );
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":1,\"future_event_field\":{\"keep\":true},\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me reason...\",\"future_delta_field\":42}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        // Passthrough preserves the exact wire format
+        assert!(output.contains("event: content_block_delta"));
+        assert!(output.contains("\"thinking\":\"Let me reason...\""));
+        assert!(output.contains("\"type\":\"thinking_delta\""));
+        assert!(output.contains("\"future_event_field\":{\"keep\":true}"));
+        assert!(output.contains("\"future_delta_field\":42"));
+    }
+
+    #[test]
+    fn native_same_format_claude_without_display_model_is_verbatim() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": true,
+        });
+        assert_eq!(resolve_finalize_stream_rewrite_mode(&report_context), None);
+        assert!(maybe_build_ai_surface_stream_rewriter(Some(&report_context)).is_none());
+    }
+
+    #[test]
+    fn claude_code_legacy_profile_and_provider_fallback_enable_read_tool_sanitizer() {
+        for report_context in [
+            json!({
+                "provider_api_format": "claude:messages",
+                "client_api_format": "claude:messages",
+                "needs_conversion": false,
+                "anthropic_compatibility_profile": "claude_code_legacy",
+            }),
+            json!({
+                "provider_api_format": "claude:messages",
+                "client_api_format": "claude:messages",
+                "needs_conversion": false,
+                "provider_type": "claude_code",
+            }),
+        ] {
+            assert_eq!(
+                resolve_finalize_stream_rewrite_mode(&report_context),
+                Some(FinalizeStreamRewriteMode::ClaudeReadToolSanitize)
+            );
+        }
+
+        let explicit_native = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": false,
+            "provider_type": "claude_code",
+            "anthropic_compatibility_profile": "native_transparent",
+        });
+        assert_eq!(resolve_finalize_stream_rewrite_mode(&explicit_native), None);
+    }
+
+    #[test]
+    fn same_format_claude_stream_sanitizes_read_start_input() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": false,
+            "anthropic_compatibility_profile": "claude_code_legacy",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("same-format claude sanitizer should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_read_1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/tmp/a.txt\",\"limit\":20,\"pages\":\"\"}}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"name\":\"Read\""));
+        assert!(output.contains("\"file_path\":\"/tmp/a.txt\""));
+        assert!(!output.contains("\"pages\":\"\""));
+    }
+
+    #[test]
+    fn same_format_claude_stream_sanitizes_read_input_json_delta() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": false,
+            "anthropic_compatibility_profile": "claude_code_legacy",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("same-format claude sanitizer should exist");
+        let mut output = rewriter
+            .push_chunk(
+                b"event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_read_1\",\"name\":\"Read\",\"input\":{}}}\n\n",
+            )
+            .expect("start should rewrite");
+        output.extend(
+            rewriter
+                .push_chunk(
+                    b"event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/a.txt\\\",\"}}\n\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"limit\\\":20,\\\"pages\\\":\\\"\\\"}\"}}\n\n",
+                )
+                .expect("deltas should buffer"),
+        );
+        let buffered_output = String::from_utf8(output.clone()).expect("output should be utf8");
+        assert!(!buffered_output.contains("input_json_delta"));
+
+        output.extend(
+            rewriter
+                .push_chunk(
+                    b"event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                )
+                .expect("stop should flush sanitized delta"),
+        );
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("event: content_block_delta"));
+        assert!(output.contains("\\\"limit\\\":20"));
+        assert!(!output.contains("\\\"pages\\\":\\\"\\\""));
+        assert!(output.contains("event: content_block_stop"));
+    }
+
+    #[test]
+    fn same_format_claude_stream_bounds_read_input_json_buffer() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": false,
+            "anthropic_compatibility_profile": "claude_code_legacy",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("same-format claude sanitizer should exist");
+        rewriter
+            .push_chunk(
+                b"event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_read_1\",\"name\":\"Read\",\"input\":{}}}\n\n",
+            )
+            .expect("start should rewrite");
+
+        let build_delta = |partial_json: &str| {
+            let payload = json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": partial_json,
+                }
+            });
+            let mut record = b"event: content_block_delta\ndata: ".to_vec();
+            record.extend(serde_json::to_vec(&payload).expect("delta should serialize"));
+            record.extend_from_slice(b"\n\n");
+            record
+        };
+        let first = "x".repeat(super::MAX_STREAM_REWRITE_BUFFER_BYTES / 2);
+        let second = "x".repeat(super::MAX_STREAM_REWRITE_BUFFER_BYTES / 2 + 1);
+        rewriter
+            .push_chunk(&build_delta(&first))
+            .expect("first partial JSON should fit");
+        let error = rewriter
+            .push_chunk(&build_delta(&second))
+            .expect_err("Read input JSON must be bounded across SSE records");
+        assert!(error.0.contains("tool input buffer exceeds"));
+    }
+
+    #[test]
+    fn same_format_claude_stream_preserves_other_tool_empty_pages() {
+        let report_context = json!({
+            "provider_api_format": "claude:messages",
+            "client_api_format": "claude:messages",
+            "needs_conversion": false,
+            "anthropic_compatibility_profile": "claude_code_legacy",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("same-format claude sanitizer should exist");
+        let output = rewriter
+            .push_chunk(
+                b"event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_search_1\",\"name\":\"Search\",\"input\":{}}}\n\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"\\\",\\\"pages\\\":\\\"\\\"}\"}}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        assert!(output.contains("\"name\":\"Search\""));
+        assert!(output.contains("\\\"pages\\\":\\\"\\\""));
+    }
+
+    #[test]
+    fn same_format_gemini_passthrough_with_display_model() {
+        // Gemini→Gemini with needs_conversion=true should pass through.
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "gemini:generate_content",
+            "needs_conversion": true,
+            "model": "gemini-2.5-pro-high",
+            "mapped_model": "gemini-2.5-pro",
+        });
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("rewriter should exist");
+        let output = rewriter
+            .push_chunk(
+                b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}],\"role\":\"model\"}}],\"modelVersion\":\"gemini-2.5-pro\"}\n\n",
+            )
+            .expect("rewrite should succeed");
+        let output = String::from_utf8(output).expect("output should be utf8");
+
+        // Model version should be rewritten
+        assert!(output.contains("\"modelVersion\":\"gemini-2.5-pro-high\""));
+        assert!(!output.contains("\"modelVersion\":\"gemini-2.5-pro\""));
+    }
+
+    #[test]
+    fn same_format_gemini_without_display_model_passes_through_verbatim() {
+        // Gemini→Gemini without display model: no rewriter needed.
+        let report_context = json!({
+            "provider_api_format": "gemini:generate_content",
+            "client_api_format": "gemini:generate_content",
+            "needs_conversion": true,
+        });
+        assert!(maybe_build_ai_surface_stream_rewriter(Some(&report_context)).is_none());
+    }
+
+    #[test]
+    fn resolves_openai_image_mode_for_same_format_image_streams() {
+        let report_context = json!({
+            "provider_api_format": "openai:image",
+            "client_api_format": "openai:image",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::OpenAiImage)
+        );
+    }
+
+    #[test]
+    fn rewrites_openai_image_stream_to_openai_chat_final_chunk() {
+        let report_context = json!({
+            "provider_api_format": "openai:image",
+            "client_api_format": "openai:chat",
+            "mapped_model": "gpt-image-2",
+            "request_id": "trace-image-chat-stream",
+            "needs_conversion": false,
+        });
+        assert_eq!(
+            resolve_finalize_stream_rewrite_mode(&report_context),
+            Some(FinalizeStreamRewriteMode::OpenAiImageToOpenAiChat)
+        );
+        let mut rewriter = maybe_build_ai_surface_stream_rewriter(Some(&report_context))
+            .expect("image to chat stream rewriter should exist");
+
+        let progress = rewriter
+            .push_chunk(
+                br#"event: response.image_generation_call.partial_image
+data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"cGFydGlhbA=="}
+
+"#,
+            )
+            .expect("partial image should rewrite as progress");
+        let progress_text = String::from_utf8(progress).expect("progress output should be utf8");
+        assert!(progress_text.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(!progress_text.contains("cGFydGlhbA=="));
+
+        let output_item = rewriter
+            .push_chunk(
+                br#"event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"image_generation_call","id":"ig_1","result":"aGVsbG8=","output_format":"png"}}
+
+"#,
+            )
+            .expect("output item should rewrite");
+        let output_item_text = String::from_utf8(output_item).expect("output item should be utf8");
+        assert!(output_item_text.is_empty());
+
+        let final_output = rewriter
+            .push_chunk(
+                br#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_123","model":"gpt-image-2","tool_usage":{"image_gen":{"total_tokens":0}},"output":[]}}
+
+"#,
+            )
+            .expect("completed event should rewrite");
+        let final_text = String::from_utf8(final_output).expect("final output should be utf8");
+        assert!(final_text.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(final_text.contains("![generated image](data:image/png;base64,aGVsbG8=)"));
+        assert!(final_text.contains("data: [DONE]"));
+        assert!(!final_text.contains("image_generation.completed"));
+    }
+}

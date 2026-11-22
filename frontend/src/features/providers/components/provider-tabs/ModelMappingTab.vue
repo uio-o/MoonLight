@@ -1,0 +1,1003 @@
+<template>
+  <Card class="overflow-hidden">
+    <!-- 标题头部 -->
+    <div class="p-4 border-b border-border/60">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold flex items-center gap-2">
+          {{ t('guide.nav.concepts.modelMapping') }}
+        </h3>
+        <Button
+          variant="outline"
+          size="sm"
+          class="h-8"
+          @click="openAddDialog"
+        >
+          <Plus class="w-3.5 h-3.5 mr-1.5" /> {{ t('ui.addMapping') }}
+        </Button>
+      </div>
+    </div>
+
+    <!-- 加载状态 -->
+    <div
+      v-if="isLoading"
+      class="flex items-center justify-center py-12"
+    >
+      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+    </div>
+
+    <!-- 映射列表 -->
+    <div
+      v-else-if="combinedMappings.length > 0"
+      ref="mappingsListRef"
+      class="divide-y divide-border/40"
+    >
+      <div
+        v-for="item in paginatedMappings"
+        :key="item.key"
+        class="transition-colors"
+      >
+        <!-- 行头部（可点击展开） -->
+        <div
+          class="flex items-start justify-between px-4 py-3 hover:bg-muted/20 cursor-pointer"
+          @click="toggleExpand(item.key)"
+        >
+          <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5">
+            <!-- 展开/收起图标 -->
+            <ChevronRight
+              class="w-4 h-4 text-muted-foreground shrink-0 transition-transform self-start mt-0.5"
+              :class="{ 'rotate-90': expandedItems.has(item.key) }"
+            />
+            <!-- 精确映射 -->
+            <template v-if="item.type === 'exact'">
+              <div class="flex min-w-0 flex-[1_1_12rem] flex-col">
+                <span class="font-semibold text-sm truncate">
+                  {{ item.targetModelName }}
+                </span>
+                <span
+                  v-if="item.group?.model.provider_model_name"
+                  class="text-xs text-muted-foreground truncate"
+                >
+                  {{ item.group.model.provider_model_name }}
+                </span>
+              </div>
+              <!-- 类型标签 -->
+              <Badge
+                variant="default"
+                class="text-xs shrink-0"
+              >
+                {{ t('ui.exact') }}
+              </Badge>
+              <!-- 分隔符 + 映射数量 -->
+              <span class="text-xs text-muted-foreground shrink-0">
+                | {{ item.mappings.length }} {{ t('ui.mappings4d33911') }} </span>
+              <Badge
+                v-if="item.group"
+                variant="outline"
+                class="min-w-0 max-w-full text-xs"
+                :title="getGroupEndpointScopeTitle(item.group)"
+              >
+                <span class="truncate">{{ getGroupEndpointScopeLabel(item.group) }}</span>
+              </Badge>
+              <Badge
+                v-if="item.group"
+                variant="outline"
+                class="min-w-0 max-w-full text-xs"
+                :title="getGroupOperationScopeLabel(item.group)"
+              >
+                <span class="truncate">{{ getGroupOperationScopeLabel(item.group) }}</span>
+              </Badge>
+            </template>
+            <!-- 正则映射 -->
+            <template v-else>
+              <div class="flex min-w-0 flex-[1_1_12rem] flex-col">
+                <span class="font-semibold text-sm truncate">
+                  {{ item.targetModelName }}
+                </span>
+                <span
+                  v-if="item.globalModelName"
+                  class="text-xs text-muted-foreground truncate"
+                >
+                  {{ item.globalModelName }}
+                </span>
+              </div>
+              <!-- 类型标签 -->
+              <Badge
+                variant="secondary"
+                class="text-xs shrink-0"
+              >
+                {{ t('ui.regex') }}
+              </Badge>
+              <!-- 分隔符 + 映射数量 -->
+              <span class="text-xs text-muted-foreground shrink-0">
+                | {{ item.mappings.length }} {{ t('ui.mappings4d33911') }} </span>
+              <!-- Key 数量 -->
+              <span
+                v-if="item.matchedKeys && item.matchedKeys.length > 0"
+                class="text-xs text-muted-foreground shrink-0"
+              >
+                · {{ item.matchedKeys.length }} Key
+              </span>
+            </template>
+          </div>
+          <!-- 操作按钮（仅精确映射可编辑/删除） -->
+          <div
+            v-if="item.type === 'exact'"
+            class="flex items-center gap-1.5 ml-4 shrink-0"
+            @click.stop
+          >
+            <Button
+              variant="ghost"
+              size="icon"
+              class="h-8 w-8"
+              :title="t('ui.editMapping')"
+              @click="item.group && editGroup(item.group)"
+            >
+              <Edit class="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              class="h-8 w-8 hover:text-destructive"
+              :title="t('ui.deleteMapping')"
+              @click="item.group && deleteGroup(item.group)"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        <!-- 展开的映射详情 -->
+        <div
+          v-show="expandedItems.has(item.key)"
+          class="bg-muted/30 border-t border-border/30"
+        >
+          <!-- 精确映射详情 -->
+          <div
+            v-if="item.type === 'exact'"
+            class="px-4 py-2 space-y-1"
+          >
+            <div
+              v-for="mapping in item.mappings"
+              :key="mapping.name"
+              class="flex items-center justify-between gap-2 py-1"
+            >
+              <span class="font-mono text-sm truncate">
+                {{ mapping.name }}
+              </span>
+              <!-- 测试按钮（直连测试） -->
+              <Button
+                v-if="!item.group || item.group.operations.length === 0"
+                variant="ghost"
+                size="icon"
+                class="h-7 w-7 shrink-0"
+                :title="t('ui.testMapping')"
+                :disabled="testingMapping === `${item.key}-${mapping.name}`"
+                @click="testMapping(item, mapping)"
+              >
+                <Loader2
+                  v-if="testingMapping === `${item.key}-${mapping.name}`"
+                  class="w-3 h-3 animate-spin"
+                />
+                <Play
+                  v-else
+                  class="w-3 h-3"
+                />
+              </Button>
+            </div>
+          </div>
+
+          <!-- 正则映射详情（按 Key 分组显示） -->
+          <div
+            v-else
+            class="px-4 py-3 space-y-3"
+          >
+            <div
+              v-for="keyItem in item.matchedKeys"
+              :key="keyItem.keyId"
+              class="bg-background rounded-md border p-3"
+            >
+              <!-- Key 信息和正则表达式（两列布局） -->
+              <div class="flex items-center gap-3">
+                <!-- 第一列：Key 名称 + sk -->
+                <div class="flex flex-col shrink-0">
+                  <span class="font-medium text-sm">{{ keyItem.keyName || t('ui.unnamedKey') }}</span>
+                  <span class="text-xs text-muted-foreground font-mono">
+                    {{ keyItem.maskedKey }}
+                  </span>
+                </div>
+                <!-- 分隔线 -->
+                <div
+                  v-if="getKeyPatterns(keyItem).length > 0"
+                  class="w-px h-8 bg-border shrink-0"
+                />
+                <!-- 第二列：正则表达式（限制2行） -->
+                <div
+                  v-if="getKeyPatterns(keyItem).length > 0"
+                  class="flex-1 min-w-0"
+                >
+                  <div
+                    class="font-mono text-[11px] text-muted-foreground line-clamp-2"
+                    :title="getKeyPatterns(keyItem).join(', ')"
+                  >
+                    {{ getKeyPatterns(keyItem).join(', ') }}
+                  </div>
+                </div>
+              </div>
+              <!-- 匹配的模型列表 -->
+              <div class="mt-2 space-y-1">
+                <div
+                  v-for="match in keyItem.matches"
+                  :key="match.name"
+                  class="flex items-center justify-between gap-2 py-1"
+                >
+                  <span class="font-mono text-sm truncate">{{ match.name }}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    class="h-7 w-7 shrink-0"
+                    :title="t('ui.testMapping')"
+                    :disabled="testingMapping === `${item.key}-${keyItem.keyId}-${match.name}`"
+                    @click="testRegexMapping(item, keyItem, match)"
+                  >
+                    <Loader2
+                      v-if="testingMapping === `${item.key}-${keyItem.keyId}-${match.name}`"
+                      class="w-3 h-3 animate-spin"
+                    />
+                    <Play
+                      v-else
+                      class="w-3 h-3"
+                    />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 分页控制 -->
+      <div
+        v-if="shouldPaginateMappings"
+        class="px-4 py-2 flex items-center justify-between text-xs text-muted-foreground"
+      >
+        <span>{{ t('ui.total76e547a') }} {{ combinedMappings.length }} {{ t('ui.mappings4d33911') }}</span>
+        <div class="flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-6 px-2 text-xs"
+            :disabled="currentMappingPage <= 1"
+            @click="currentMappingPage--"
+          >
+            ‹
+          </Button>
+          <span class="tabular-nums">{{ currentMappingPage }} / {{ totalMappingPages }}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-6 px-2 text-xs"
+            :disabled="currentMappingPage >= totalMappingPages"
+            @click="currentMappingPage++"
+          >
+            ›
+          </Button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 空状态 -->
+    <div
+      v-else
+      class="p-8 text-center text-muted-foreground"
+    >
+      <Tag class="w-12 h-12 mx-auto mb-3 opacity-50" />
+      <p class="text-sm">
+        {{ t('ui.noModelMappings') }}
+      </p>
+      <p class="text-xs mt-1">
+        {{ t('ui.addAMappingToConfigureModelNameAliases') }}
+      </p>
+    </div>
+  </Card>
+
+  <!-- 添加/编辑映射对话框 -->
+  <ModelMappingDialog
+    v-if="dialogOpen"
+    v-model:open="dialogOpen"
+    :provider-id="provider.id"
+    :models="models"
+    :endpoints="endpoints"
+    :editing-group="editingGroup"
+    :preselected-model-id="preselectedModelId"
+    :has-auto-fetch-key="hasAutoFetchKey"
+    @saved="onDialogSaved"
+  />
+
+  <!-- 删除确认对话框 -->
+  <AlertDialog
+    v-model="deleteConfirmOpen"
+    :title="t('ui.deleteMapping')"
+    :description="deleteConfirmDescription"
+    :confirm-text="t('ui.delete')"
+    :cancel-text="t('common.cancel')"
+    type="danger"
+    @confirm="confirmDelete"
+    @cancel="deleteConfirmOpen = false"
+  />
+
+  <!-- 模型测试对话框 -->
+  <ModelTestDialog
+    :open="modelTest.dialogOpen.value"
+    :result="modelTest.testResult.value"
+    mode="direct"
+    :provider-type="provider.provider_type"
+    :selecting-model-name="testingModelName"
+    :endpoints="selectableTestEndpoints"
+    :selected-endpoint="selectedTestEndpoint"
+    :testing="modelTest.testing.value"
+    :trace="modelTest.testTrace.value"
+    :request-id="modelTest.requestId.value"
+    :request-headers-draft="testRequestHeadersDraft"
+    :request-headers-reset-value="testRequestHeadersResetValue"
+    :request-headers-error="testRequestHeadersError"
+    :request-body-draft="testRequestBodyDraft"
+    :request-body-reset-value="testRequestBodyResetValue"
+    :request-body-error="testRequestBodyError"
+    :key-options="testKeyOptions"
+    :selected-key-ids="selectedTestKeyIds"
+    :key-options-loading="loadingTestKeys"
+    :start-disabled="loadingTestKeys || !selectedTestEndpoint || !!testRequestHeadersError || !!testRequestBodyError"
+    @close="handleTestDialogClose"
+    @back="handleTestDialogBack"
+    @select-endpoint="handleSelectTestEndpoint"
+    @start="handleStartMappingTest"
+    @update:request-headers-draft="testRequestHeadersDraft = $event"
+    @update:request-body-draft="testRequestBodyDraft = $event"
+    @update:selected-key-ids="selectedTestKeyIds = $event"
+  />
+</template>
+
+<script setup lang="ts">
+import { ref, computed, watch } from 'vue'
+import { useSmartPagination } from '@/composables/useSmartPagination'
+import { useModelTest } from '@/composables/useModelTest'
+import { Tag, Plus, Edit, Trash2, ChevronRight, Loader2, Play } from 'lucide-vue-next'
+import {
+  Card, Button, Badge,
+} from '@/components/ui'
+import AlertDialog from '@/components/common/AlertDialog.vue'
+import ModelMappingDialog, { type AliasGroup } from '../ModelMappingDialog.vue'
+import ModelTestDialog from './ModelTestDialog.vue'
+import { useToast } from '@/composables/useToast'
+import {
+  type Model,
+  type ProviderEndpoint,
+  type ProviderModelAlias,
+  type ProviderMappingPreviewResponse,
+} from '@/api/endpoints'
+import { formatApiFormat } from '@/api/endpoints/types/api-format'
+import { getProviderKeys, type EndpointAPIKey } from '@/api/endpoints/keys'
+import { updateModel } from '@/api/endpoints/models'
+import { useI18n } from '@/i18n'
+import { parseApiError } from '@/utils/errorParser'
+import type { ProviderWithEndpointsSummary } from '@/api/endpoints'
+import {
+  formatModelMappingEndpointLabel,
+  formatModelMappingRequestScope,
+  modelMappingOperationsKey,
+  normalizeModelMappingOperations,
+} from '../../utils/modelMappingScope'
+import {
+  buildDefaultModelTestRequestHeaders,
+  buildDefaultModelTestRequestBody,
+  isModelTestableApiFormat,
+  modelTestMappingScopeMatchesEndpoint,
+  modelTestKeySupportsEndpoint,
+  parseModelTestRequestHeadersDraft,
+  parseModelTestRequestBodyDraft,
+  selectPreferredModelTestEndpoint,
+  syncModelTestRequestBodyDraft,
+} from './model-test-request'
+
+interface MappingItem {
+  name: string
+  priority?: number
+  pattern?: string
+}
+
+interface MatchedKeyInfo {
+  keyId: string
+  keyName: string
+  maskedKey: string
+  matches: MappingItem[]
+}
+
+interface CombinedMapping {
+  key: string
+  type: 'exact' | 'regex'
+  targetModelName: string
+  targetModelId?: string
+  globalModelName?: string  // 正则映射的全局模型名称
+  mappings: MappingItem[]
+  matchedKeys?: MatchedKeyInfo[]  // 正则映射的 Key 信息
+  group?: AliasGroup
+}
+
+const props = defineProps<{
+  provider: ProviderWithEndpointsSummary
+  endpoints?: ProviderEndpoint[]
+  providerKeys?: EndpointAPIKey[]
+  models?: Model[]
+  mappingPreview?: ProviderMappingPreviewResponse | null
+  loading?: boolean
+}>()
+
+const emit = defineEmits<{
+  'refresh': []
+}>()
+
+const { t } = useI18n()
+
+const { error: showError, success: showSuccess } = useToast()
+
+// 模型测试 composable
+const modelTest = useModelTest({ providerId: () => props.provider.id })
+
+// 状态
+const localLoading = ref(false)
+const dialogOpen = ref(false)
+const deleteConfirmOpen = ref(false)
+const editingGroup = ref<AliasGroup | null>(null)
+const deletingGroup = ref<AliasGroup | null>(null)
+const testingMapping = ref<string | null>(null)
+const pendingMappingKey = ref<string | null>(null)
+const testingModelName = ref<string | null>(null)
+const testingSourceModel = ref<Model | null>(null)
+const preselectedModelId = ref<string | null>(null)
+const selectedTestEndpoint = ref<ProviderEndpoint | null>(null)
+const selectedTestKeyIds = ref<string[]>([])
+const testKeys = ref<EndpointAPIKey[] | null>(null)
+const loadingTestKeys = ref(false)
+let testKeysLoadVersion = 0
+const testKeyOptions = computed(() => {
+  const endpoint = selectedTestEndpoint.value
+  if (!endpoint) return []
+  return [...new Map((testKeys.value ?? props.providerKeys ?? []).map(key => [key.id, key])).values()]
+    .filter(key => modelTestKeySupportsEndpoint(key, endpoint, props.provider.provider_type))
+    .sort((left, right) => left.internal_priority - right.internal_priority)
+    .map(key => ({
+      value: key.id,
+      label: [
+        key.name?.trim() || key.api_key_masked?.trim() || key.id,
+        key.name?.trim() ? key.api_key_masked?.trim() : '',
+        key.auth_type?.trim(),
+      ].filter(Boolean).join(' · '),
+    }))
+})
+
+function pruneSelectedTestKeyIds() {
+  const allowed = new Set(testKeyOptions.value.map(option => option.value))
+  selectedTestKeyIds.value = [...new Set(selectedTestKeyIds.value.filter(id => allowed.has(id)))]
+}
+
+async function loadTestKeys() {
+  const version = ++testKeysLoadVersion
+  const providerId = props.provider.id
+  loadingTestKeys.value = true
+  try {
+    const keys = await getProviderKeys(providerId)
+    if (version === testKeysLoadVersion && providerId === props.provider.id) {
+      testKeys.value = keys
+    }
+  } catch (err: unknown) {
+    if (version === testKeysLoadVersion && providerId === props.provider.id) {
+      showError(parseApiError(err, t('ui.failedToLoadTestKeys')), t('ui.error'))
+    }
+  } finally {
+    if (version === testKeysLoadVersion) loadingTestKeys.value = false
+  }
+}
+
+watch(testKeyOptions, pruneSelectedTestKeyIds)
+watch(() => props.provider.id, () => {
+  testKeysLoadVersion += 1
+  testKeys.value = null
+  selectedTestKeyIds.value = []
+  loadingTestKeys.value = false
+})
+const testRequestHeadersDraft = ref('')
+const testRequestHeadersResetValue = ref('')
+const testRequestBodyDraft = ref('')
+const testRequestBodyResetValue = ref('')
+const mappingTestEndpoints = ref<ProviderEndpoint[] | null>(null)
+const providerKeysState = computed(() => props.providerKeys ?? [])
+const testableEndpoints = computed(() => (props.endpoints ?? [])
+  .filter(endpoint => isModelTestableApiFormat(endpoint.api_format)))
+const selectableTestEndpoints = computed(() => mappingTestEndpoints.value ?? testableEndpoints.value)
+const parsedTestRequestHeaders = computed(() => parseModelTestRequestHeadersDraft(testRequestHeadersDraft.value))
+const testRequestHeadersError = computed(() => parsedTestRequestHeaders.value.error)
+const parsedTestRequestBody = computed(() => parseModelTestRequestBodyDraft(testRequestBodyDraft.value))
+const testRequestBodyError = computed(() => parsedTestRequestBody.value.error)
+const isLoading = computed(() => Boolean(props.loading) || localLoading.value)
+
+// 使用 props 传入的数据
+const models = computed(() => props.models ?? [])
+const aliasMappingPreview = computed(() => props.mappingPreview ?? null)
+
+// 后端分页下当前页不一定包含 auto_fetch key；有活跃 key 时允许弹窗尝试拉取上游模型。
+const hasAutoFetchKey = computed(() => {
+  return providerKeysState.value.some(k => k.auto_fetch_models) || props.provider.active_keys > 0
+})
+
+// 展开状态
+const expandedItems = ref<Set<string>>(new Set())
+
+// 生成作用域唯一键
+function getApiFormatsKey(formats: string[] | undefined): string {
+  return getScopeKey(formats)
+}
+
+function normalizeStringList(values: string[] | undefined): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values ?? []) {
+    const normalized = value.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    result.push(normalized)
+  }
+  return result
+}
+
+function getScopeKey(values: string[] | undefined): string {
+  return normalizeStringList(values).sort().join(',')
+}
+
+function getEndpointIdsKey(endpointIds: string[] | undefined): string {
+  return getScopeKey(endpointIds)
+}
+
+function getOperationsKey(operations: string[] | undefined): string {
+  return modelMappingOperationsKey(operations)
+}
+
+const requestScopeLabels = computed(() => ({
+  allRequests: t('providers.modelMapping.scope.allRequests'),
+  sessionCompactionOnly: t('providers.modelMapping.scope.sessionCompactionOnly'),
+  customOperations: (operations: string[]) => t(
+    'providers.modelMapping.scope.customOperations',
+    { operations: operations.join(', ') },
+  ),
+}))
+
+function getGroupEndpointScopeLabel(group: AliasGroup): string {
+  if (!group.endpointIds || group.endpointIds.length === 0) {
+    return t('providers.modelMapping.scope.allEndpoints')
+  }
+  const labels = getGroupEndpointScopeLabels(group)
+  return labels.length === 1
+    ? labels[0]
+    : t('providers.modelMapping.scope.endpointCount', { count: labels.length })
+}
+
+function getGroupEndpointScopeTitle(group: AliasGroup): string {
+  if (!group.endpointIds || group.endpointIds.length === 0) {
+    return t('providers.modelMapping.scope.allEndpoints')
+  }
+  return getGroupEndpointScopeLabels(group).join('、')
+}
+
+function getGroupEndpointScopeLabels(group: AliasGroup): string[] {
+  const endpoints = props.endpoints ?? []
+  return group.endpointIds.map((endpointId) => {
+    const endpoint = endpoints.find(item => item.id === endpointId)
+    if (!endpoint) return endpointId
+    return formatModelMappingEndpointLabel(endpoint, endpoints)
+  })
+}
+
+function getGroupOperationScopeLabel(group: AliasGroup): string {
+  return formatModelMappingRequestScope(group.operations, requestScopeLabels.value)
+}
+
+// 精确映射分组（来自 provider_model_mappings）
+const exactMappingGroups = computed<AliasGroup[]>(() => {
+  const groups: AliasGroup[] = []
+  const groupMap = new Map<string, AliasGroup>()
+
+  for (const model of models.value) {
+    if (!model.provider_model_mappings || !Array.isArray(model.provider_model_mappings)) continue
+
+    for (const alias of model.provider_model_mappings) {
+      const apiFormatsKey = getApiFormatsKey(alias.api_formats)
+      const endpointIdsKey = getEndpointIdsKey(alias.endpoint_ids)
+      const operationsKey = getOperationsKey(alias.operations)
+      const groupKey = `${model.id}|${apiFormatsKey}|${endpointIdsKey}|${operationsKey}`
+
+      if (!groupMap.has(groupKey)) {
+        const group: AliasGroup = {
+          model,
+          apiFormatsKey,
+          apiFormats: alias.api_formats || [],
+          endpointIdsKey,
+          endpointIds: normalizeStringList(alias.endpoint_ids),
+          operationsKey,
+          operations: normalizeModelMappingOperations(alias.operations),
+          aliases: []
+        }
+        groupMap.set(groupKey, group)
+        groups.push(group)
+      }
+      groupMap.get(groupKey)?.aliases.push(alias)
+    }
+  }
+
+  for (const group of groups) {
+    group.aliases.sort((a, b) => a.priority - b.priority)
+  }
+
+  return groups
+})
+
+// 正则映射（来自 aliasMappingPreview，按 GlobalModel 分组并保留 Key 信息）
+const regexMappings = computed<CombinedMapping[]>(() => {
+  if (!aliasMappingPreview.value) return []
+
+  const result: CombinedMapping[] = []
+  const modelMap = new Map<string, CombinedMapping>()
+
+  const previewKeys = Array.isArray(aliasMappingPreview.value.keys)
+    ? aliasMappingPreview.value.keys
+    : []
+  for (const keyInfo of previewKeys) {
+    const matchingGlobalModels = Array.isArray(keyInfo.matching_global_models)
+      ? keyInfo.matching_global_models
+      : []
+    for (const gm of matchingGlobalModels) {
+      const matchedModels = Array.isArray(gm.matched_models) ? gm.matched_models : []
+      if (!modelMap.has(gm.global_model_id)) {
+        modelMap.set(gm.global_model_id, {
+          key: `regex-${gm.global_model_id}`,
+          type: 'regex',
+          targetModelName: gm.display_name || gm.global_model_name || gm.global_model_id,
+          targetModelId: gm.global_model_id,
+          globalModelName: gm.global_model_name,
+          mappings: [],
+          matchedKeys: []
+        })
+        result.push(modelMap.get(gm.global_model_id) as CombinedMapping)
+      }
+
+      const mapping = modelMap.get(gm.global_model_id)
+      if (!mapping) continue
+
+      // 添加 Key 信息
+      const keyMatches: MappingItem[] = matchedModels.map(m => ({
+        name: m.allowed_model,
+        pattern: m.mapping_pattern
+      }))
+
+      mapping.matchedKeys?.push({
+        keyId: keyInfo.key_id,
+        keyName: keyInfo.key_name,
+        maskedKey: keyInfo.masked_key,
+        matches: keyMatches
+      })
+
+      // 收集所有映射（去重）
+      for (const match of matchedModels) {
+        if (!mapping.mappings.some(m => m.name === match.allowed_model)) {
+          mapping.mappings.push({
+            name: match.allowed_model,
+            pattern: match.mapping_pattern
+          })
+        }
+      }
+    }
+  }
+
+  return result
+})
+
+// 合并后的映射列表
+const combinedMappings = computed<CombinedMapping[]>(() => {
+  const result: CombinedMapping[] = []
+
+  // 添加精确映射
+  for (const group of exactMappingGroups.value) {
+    result.push({
+      key: `exact-${group.model.id}-${group.apiFormatsKey}-${group.endpointIdsKey}-${group.operationsKey}`,
+      type: 'exact',
+      targetModelName: group.model.global_model_display_name || group.model.provider_model_name,
+      targetModelId: group.model.id,
+      mappings: group.aliases.map(a => ({
+        name: a.name,
+        priority: a.priority
+      })),
+      group
+    })
+  }
+
+  // 添加正则映射
+  for (const mapping of regexMappings.value) {
+    result.push(mapping)
+  }
+
+  return result.sort((a, b) => {
+    // 精确映射排在前面
+    if (a.type !== b.type) return a.type === 'exact' ? -1 : 1
+    return a.targetModelName.localeCompare(b.targetModelName)
+  })
+})
+
+// ===== 模型映射智能分页 =====
+const mappingsListRef = ref<HTMLElement | null>(null)
+const {
+  currentPage: currentMappingPage,
+  totalPages: totalMappingPages,
+  shouldPaginate: shouldPaginateMappings,
+  paginatedItems: paginatedMappings,
+} = useSmartPagination(combinedMappings, mappingsListRef)
+
+// 刷新数据（通知父组件刷新）
+function refresh() {
+  emit('refresh')
+}
+
+// 删除确认描述
+const deleteConfirmDescription = computed(() => {
+  if (!deletingGroup.value) return ''
+  const { model, aliases } = deletingGroup.value
+  const modelName = model.global_model_display_name || model.provider_model_name
+  const aliasNames = aliases.map(a => a.name).join(', ')
+  const endpointScope = getGroupEndpointScopeLabel(deletingGroup.value)
+  const operationScope = getGroupOperationScopeLabel(deletingGroup.value)
+  return t('providers.migration.deleteMappingsForModelUnder7e3e4a', { value: String(modelName), value_2: String(endpointScope), value_3: String(operationScope), value_4: String(aliases.length), value_5: String(aliasNames) })
+})
+
+// 切换展开状态
+function toggleExpand(key: string) {
+  if (expandedItems.value.has(key)) {
+    expandedItems.value.delete(key)
+  } else {
+    expandedItems.value.add(key)
+  }
+}
+
+// 获取单个 Key 的去重正则模式列表
+function getKeyPatterns(keyItem: MatchedKeyInfo): string[] {
+  const patterns = new Set<string>()
+  for (const match of keyItem.matches) {
+    if (match.pattern) {
+      patterns.add(match.pattern)
+    }
+  }
+  return Array.from(patterns)
+}
+
+// 打开添加对话框
+function openAddDialog() {
+  editingGroup.value = null
+  preselectedModelId.value = null
+  dialogOpen.value = true
+}
+
+// 编辑分组
+function editGroup(group: AliasGroup) {
+  editingGroup.value = group
+  preselectedModelId.value = null
+  dialogOpen.value = true
+}
+
+// 删除分组
+function deleteGroup(group: AliasGroup) {
+  deletingGroup.value = group
+  deleteConfirmOpen.value = true
+}
+
+// 确认删除
+async function confirmDelete() {
+  if (!deletingGroup.value) return
+
+  const { model, aliases, apiFormatsKey, endpointIdsKey, operationsKey } = deletingGroup.value
+
+  try {
+    const currentAliases = model.provider_model_mappings || []
+    const aliasNamesToRemove = new Set(aliases.map(a => a.name))
+    const newAliases = currentAliases.filter((a: ProviderModelAlias) => {
+      const currentKey = getApiFormatsKey(a.api_formats)
+      const currentEndpointIdsKey = getEndpointIdsKey(a.endpoint_ids)
+      const currentOperationsKey = getOperationsKey(a.operations)
+      return !(currentKey === apiFormatsKey
+        && currentEndpointIdsKey === endpointIdsKey
+        && currentOperationsKey === operationsKey
+        && aliasNamesToRemove.has(a.name))
+    })
+
+    await updateModel(props.provider.id, model.id, {
+      provider_model_mappings: newAliases.length > 0 ? newAliases : null
+    })
+
+    showSuccess(t('ui.mappingDeleted'))
+    deleteConfirmOpen.value = false
+    deletingGroup.value = null
+    emit('refresh')
+  } catch (err: unknown) {
+    showError(parseApiError(err, t('ui.deletionFailed')), t('ui.error'))
+  }
+}
+
+// 对话框保存后回调
+async function onDialogSaved() {
+  emit('refresh')
+}
+
+function handleTestDialogClose() {
+  modelTest.resetState()
+  testKeysLoadVersion += 1
+  loadingTestKeys.value = false
+  testKeys.value = null
+  pendingMappingKey.value = null
+  testingModelName.value = null
+  testingSourceModel.value = null
+  testingMapping.value = null
+  selectedTestEndpoint.value = null
+  selectedTestKeyIds.value = []
+  mappingTestEndpoints.value = null
+  testRequestHeadersDraft.value = ''
+  testRequestHeadersResetValue.value = ''
+  testRequestBodyDraft.value = ''
+  testRequestBodyResetValue.value = ''
+}
+
+function handleTestDialogBack() {
+  if (modelTest.testing.value) return
+  modelTest.testResult.value = null
+  modelTest.stopPolling()
+}
+
+function handleSelectTestEndpoint(endpointId: string) {
+  const endpoint = selectableTestEndpoints.value.find(item => item.id === endpointId)
+  if (!endpoint) return
+  selectedTestEndpoint.value = endpoint
+  pruneSelectedTestKeyIds()
+  syncMappingTestRequestBody()
+}
+
+function findMappingTestModel(modelName: string): Model | null {
+  const normalized = modelName.trim()
+  if (!normalized) return null
+
+  return models.value.find(model => (
+    model.provider_model_name === normalized
+    || model.global_model_name === normalized
+    || model.global_model_display_name === normalized
+    || (model.provider_model_mappings ?? []).some(alias => alias.name === normalized)
+  )) ?? null
+}
+
+// 测试映射（直连测试，带故障转移和实时进度）
+function runMappingTest(
+  testingKey: string,
+  modelName: string,
+  endpointsOverride?: ProviderEndpoint[],
+  sourceModel?: Model | null,
+) {
+  const endpoints = endpointsOverride ?? testableEndpoints.value
+  if (endpoints.length === 0) {
+    showError(t('providers.migration.noEndpointsAvailableForTesting9ec423'))
+    return
+  }
+  pendingMappingKey.value = testingKey
+  selectedTestKeyIds.value = []
+  void loadTestKeys()
+  modelTest.testResult.value = null
+  modelTest.dialogOpen.value = true
+  testingMapping.value = null
+  testingModelName.value = modelName
+  testingSourceModel.value = sourceModel ?? findMappingTestModel(modelName)
+  mappingTestEndpoints.value = endpointsOverride ?? null
+  selectedTestEndpoint.value = selectPreferredModelTestEndpoint(
+    testingSourceModel.value,
+    endpoints,
+  )
+  testRequestHeadersResetValue.value = buildDefaultModelTestRequestHeaders()
+  testRequestHeadersDraft.value = testRequestHeadersResetValue.value
+  resetMappingTestRequestBody()
+}
+
+function resetMappingTestRequestBody() {
+  if (!testingModelName.value) return
+
+  testRequestBodyResetValue.value = buildDefaultModelTestRequestBody(
+    testingModelName.value,
+    selectedTestEndpoint.value?.api_format,
+    testingSourceModel.value,
+  )
+  testRequestBodyDraft.value = testRequestBodyResetValue.value
+}
+
+function syncMappingTestRequestBody() {
+  if (!testingModelName.value) return
+
+  const nextResetValue = buildDefaultModelTestRequestBody(
+    testingModelName.value,
+    selectedTestEndpoint.value?.api_format,
+    testingSourceModel.value,
+  )
+  const next = syncModelTestRequestBodyDraft(
+    testRequestBodyDraft.value,
+    testRequestBodyResetValue.value,
+    nextResetValue,
+    testingModelName.value,
+  )
+  testRequestBodyResetValue.value = next.resetValue
+  testRequestBodyDraft.value = next.draft
+}
+
+async function handleStartMappingTest() {
+  if (modelTest.testing.value || loadingTestKeys.value || !testingModelName.value) return
+  const endpoint = selectedTestEndpoint.value || selectableTestEndpoints.value[0]
+  if (!endpoint) {
+    showError(t('ui.selectAnEndpointToTest'))
+    return
+  }
+
+  const { value: requestHeaders, error: requestHeadersError } = parsedTestRequestHeaders.value
+  if (!requestHeaders || requestHeadersError) {
+    showError(t('providers.migration.invalidTestRequestHeaders73f57d', { value: String(requestHeadersError || t('ui.invalidJson')) }))
+    return
+  }
+
+  const { value: requestBody, error } = parsedTestRequestBody.value
+  if (!requestBody || error) {
+    showError(t('providers.migration.invalidTestRequestBody4d0d50', { value: String(error || t('ui.invalidJson')) }))
+    return
+  }
+
+  const currentMappingKey = pendingMappingKey.value || testingModelName.value
+  testingMapping.value = pendingMappingKey.value ? currentMappingKey : null
+  pruneSelectedTestKeyIds()
+  await modelTest.startTest({
+    mode: 'direct',
+    modelName: testingModelName.value,
+    displayLabel: t('providers.migration.mapping3bd29d', { value: String(formatApiFormat(endpoint.api_format)), value_2: String(testingModelName.value) }),
+    apiFormat: endpoint.api_format,
+    endpointId: endpoint.id,
+    endpointBaseUrl: endpoint.base_url,
+    apiKeyIds: selectedTestKeyIds.value,
+    requestHeaders,
+    requestBody,
+  })
+  if (pendingMappingKey.value === currentMappingKey) {
+    pendingMappingKey.value = null
+  }
+  testingMapping.value = null
+}
+
+function scopedMappingEndpoints(item: CombinedMapping): ProviderEndpoint[] {
+  const group = item.group
+  if (!group) return testableEndpoints.value
+
+  return testableEndpoints.value.filter(endpoint => modelTestMappingScopeMatchesEndpoint(
+    group.apiFormats,
+    group.endpointIds,
+    endpoint,
+  ))
+}
+
+// 测试精确映射
+function testMapping(item: CombinedMapping, mapping: MappingItem) {
+  runMappingTest(`${item.key}-${mapping.name}`, mapping.name, scopedMappingEndpoints(item), item.group?.model)
+}
+
+// 测试正则映射
+function testRegexMapping(item: CombinedMapping, keyItem: MatchedKeyInfo, match: MappingItem) {
+  runMappingTest(`${item.key}-${keyItem.keyId}-${match.name}`, match.name)
+}
+
+// 暴露给父组件
+defineExpose({
+  dialogOpen: computed(() => dialogOpen.value || deleteConfirmOpen.value),
+  reload: refresh
+})
+</script>

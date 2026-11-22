@@ -1,0 +1,352 @@
+import { getI18nLocale } from '@/i18n'
+
+const COMPACT_NUMBER_UNITS = [
+  { value: 1_000_000_000_000, suffix: 'T' },
+  { value: 1_000_000_000, suffix: 'B' },
+  { value: 1_000_000, suffix: 'M' },
+  { value: 1_000, suffix: 'K' },
+] as const
+
+interface CompactNumberOptions {
+  fractionDigits?: number
+  nullLabel?: string
+}
+
+function trimTrailingDecimalZeros(value: string): string {
+  return value.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+
+function compactFractionDigits(scaled: number, fixedFractionDigits?: number): number {
+  if (fixedFractionDigits !== undefined) return fixedFractionDigits
+  if (scaled >= 100) return 0
+  if (scaled >= 10) return 1
+  return 2
+}
+
+function formatCompactScaledValue(
+  absValue: number,
+  unitIndex: number,
+  fixedFractionDigits?: number,
+): string {
+  const unit = COMPACT_NUMBER_UNITS[unitIndex]
+  const scaled = absValue / unit.value
+  const fractionDigits = compactFractionDigits(scaled, fixedFractionDigits)
+  const rounded = Number(scaled.toFixed(fractionDigits))
+
+  if (rounded >= 1000 && unitIndex > 0) {
+    return formatCompactScaledValue(absValue, unitIndex - 1, fixedFractionDigits)
+  }
+
+  return `${trimTrailingDecimalZeros(scaled.toFixed(fractionDigits))}${unit.suffix}`
+}
+
+export function formatCompactNumber(
+  num: number | undefined | null,
+  options: CompactNumberOptions = {},
+): string {
+  if (num === undefined || num === null) {
+    return options.nullLabel ?? '0'
+  }
+
+  const value = Number(num)
+  if (!Number.isFinite(value)) {
+    return options.nullLabel ?? '0'
+  }
+
+  const sign = value < 0 ? '-' : ''
+  const absValue = Math.abs(value)
+
+  if (absValue < 1_000) {
+    return `${sign}${Number.isInteger(absValue) ? absValue.toString() : trimTrailingDecimalZeros(absValue.toFixed(1))}`
+  }
+
+  const unitIndex = COMPACT_NUMBER_UNITS.findIndex(unit => absValue >= unit.value)
+  if (unitIndex === -1) {
+    return `${sign}${Math.round(absValue)}`
+  }
+
+  return `${sign}${formatCompactScaledValue(absValue, unitIndex, options.fractionDigits)}`
+}
+
+export function formatByteSize(bytes: number | undefined | null): string {
+  if (bytes === undefined || bytes === null || !Number.isFinite(bytes)) {
+    return '-'
+  }
+
+  const absBytes = Math.max(0, Math.abs(bytes))
+  const sign = bytes < 0 ? '-' : ''
+  if (absBytes < 1024) {
+    return `${sign}${Math.round(absBytes)} B`
+  }
+
+  const units = [
+    { value: 1024 ** 4, suffix: 'TB' },
+    { value: 1024 ** 3, suffix: 'GB' },
+    { value: 1024 ** 2, suffix: 'MB' },
+    { value: 1024, suffix: 'KB' },
+  ] as const
+  const unit = units.find(candidate => absBytes >= candidate.value) ?? units[3]
+  const scaled = absBytes / unit.value
+  const fractionDigits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+  const formatted = trimTrailingDecimalZeros(scaled.toFixed(fractionDigits))
+
+  return `${sign}${formatted} ${unit.suffix}`
+}
+
+// Token formatting - intelligent display based on value size
+export function formatTokens(num: number | undefined | null): string {
+  return formatCompactNumber(num)
+}
+
+// Currency formatting with high precision for small values
+export function formatCurrency(amount: number | undefined | null): string {
+  if (amount === undefined || amount === null || amount === 0) {
+    return '$0.00'
+  }
+
+  // For very small amounts (< $0.00001), show up to 8 decimal places
+  if (amount > 0 && amount < 0.00001) {
+    const formatted = amount.toFixed(8)
+    // Remove trailing zeros but keep at least 2 decimal places
+    const trimmed = formatted.replace(/(\.\d\d)0+$/, '$1')
+    return `$${  trimmed}`
+  }
+
+  // For small amounts (< $0.0001), show up to 6 decimal places
+  if (amount < 0.0001) {
+    const formatted = amount.toFixed(6)
+    // Remove trailing zeros but keep at least 2 decimal places
+    const trimmed = formatted.replace(/(\.\d\d)0+$/, '$1')
+    return `$${  trimmed}`
+  }
+
+  // For small amounts (< $0.01), show up to 5 decimal places
+  if (amount < 0.01) {
+    const formatted = amount.toFixed(5)
+    // Remove trailing zeros but keep at least 2 decimal places
+    const trimmed = formatted.replace(/(\.\d\d)0+$/, '$1')
+    return `$${  trimmed}`
+  }
+
+  // For amounts less than $1, show 4 decimal places
+  if (amount < 1) {
+    const formatted = amount.toFixed(4)
+    // Remove trailing zeros but keep at least 2 decimal places
+    const trimmed = formatted.replace(/(\.\d\d)0+$/, '$1')
+    return `$${  trimmed}`
+  }
+
+  // For amounts $1-$100, show 2-3 decimal places
+  if (amount < 100) {
+    const formatted = amount.toFixed(3)
+    // Remove trailing zeros but keep at least 2 decimal places
+    const trimmed = formatted.replace(/(\.\d\d)0+$/, '$1')
+    return `$${  trimmed}`
+  }
+
+  // For larger amounts, show 2 decimal places
+  return `$${  amount.toFixed(2)}`
+}
+
+// Number formatting with locale support
+export function formatNumber(num: number | undefined | null): string {
+  if (num === undefined || num === null) {
+    return '0'
+  }
+  return num.toLocaleString(getI18nLocale())
+}
+
+// Date formatting
+export function formatDate(dateString: string | undefined | null): string {
+  if (!dateString) return getI18nLocale() === 'en-US' ? 'Unknown' : '未知'
+
+  return new Date(dateString).toLocaleDateString(getI18nLocale(), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+export function formatRelativeTime(value: number, unit: Intl.RelativeTimeFormatUnit): string {
+  return new Intl.RelativeTimeFormat(getI18nLocale(), { numeric: 'auto' }).format(value, unit)
+}
+
+type DateInput = string | number | Date | null | undefined
+
+function toValidDate(value: DateInput): Date | null {
+  if (value === null || value === undefined || value === '') return null
+  const date = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+// Date only in the locale default shape (e.g. 2026/9/7)
+export function formatDateShort(value: DateInput, nullLabel = '-'): string {
+  const date = toValidDate(value)
+  return date ? date.toLocaleDateString(getI18nLocale()) : nullLabel
+}
+
+// Date only with two-digit month and day (e.g. 2026/09/07)
+export function formatDateOnly(value: DateInput, nullLabel = '-'): string {
+  const date = toValidDate(value)
+  if (!date) return nullLabel
+  return date.toLocaleDateString(getI18nLocale(), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+}
+
+// Date and time to the minute (e.g. 2026/09/07 12:30)
+export function formatDateTime(value: DateInput, nullLabel = '-'): string {
+  const date = toValidDate(value)
+  if (!date) return nullLabel
+  return date.toLocaleString(getI18nLocale(), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+// Date and time including seconds, for detail panels
+export function formatDateTimeFull(value: DateInput, nullLabel = '-'): string {
+  const date = toValidDate(value)
+  if (!date) return nullLabel
+  return date.toLocaleString(getI18nLocale(), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+// Month, day and time without the year, for dense tables (e.g. 09/07 12:30)
+export function formatDateTimeCompact(value: DateInput, nullLabel = '-'): string {
+  const date = toValidDate(value)
+  if (!date) return nullLabel
+  return date.toLocaleString(getI18nLocale(), {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+// Relative wording for recent timestamps, falling back to the date after a week
+export function formatTimeAgo(value: DateInput, nullLabel = '-'): string {
+  const date = toValidDate(value)
+  if (!date) return nullLabel
+
+  const diffMs = Date.now() - date.getTime()
+  const minutes = Math.floor(diffMs / 60_000)
+  const hours = Math.floor(diffMs / 3_600_000)
+  const days = Math.floor(diffMs / 86_400_000)
+
+  if (minutes < 1) return formatRelativeTime(0, 'second')
+  if (minutes < 60) return formatRelativeTime(-minutes, 'minute')
+  if (hours < 24) return formatRelativeTime(-hours, 'hour')
+  if (days < 7) return formatRelativeTime(-days, 'day')
+  return formatDateOnly(date)
+}
+
+// Model price formatting (already in per 1M tokens)
+export function formatModelPrice(price: number | undefined | null): string {
+  if (price === undefined || price === null) {
+    return '$0.00'
+  }
+
+  // Price is already per 1M tokens, no conversion needed
+  if (price < 1) {
+    return `$${  price.toFixed(4).replace(/\.?0+$/, '').padEnd(price.toFixed(4).indexOf('.') + 3, '0')}`
+  } else {
+    return `$${  price.toFixed(2)}`
+  }
+}
+
+// Billing type formatting
+export function formatBillingType(type: string | undefined | null): string {
+  if (getI18nLocale() === 'en-US') {
+    const englishTypeMap: Record<string, string> = {
+      'pay_as_you_go': 'Pay as you go',
+      'monthly_quota': 'Monthly quota',
+      'free_tier': 'Free tier',
+    }
+    return englishTypeMap[type || ''] || type || 'Pay as you go'
+  }
+
+  const typeMap: Record<string, string> = {
+    'pay_as_you_go': '按量付费',
+    'monthly_quota': '月卡配额',
+    'free_tier': '免费套餐'
+  }
+  return typeMap[type || ''] || type || '按量付费'
+}
+
+// Format cost with 4 decimal places (for cache analysis)
+export function formatCost(cost: number | null | undefined): string {
+  if (cost === null || cost === undefined) return '-'
+  return `$${cost.toFixed(4)}`
+}
+
+// Usage count formatting (compact display for large numbers)
+export function formatUsageCount(count: number): string {
+  return formatCompactNumber(count, { fractionDigits: 1 })
+}
+
+// Format remaining time from unix timestamp
+export function formatRemainingTime(expireAt: number | undefined, currentTime: number): string {
+  const isEnglish = getI18nLocale() === 'en-US'
+  if (!expireAt) return isEnglish ? 'Unknown' : '未知'
+  const remaining = expireAt - currentTime
+  if (remaining <= 0) return isEnglish ? 'Expired' : '已过期'
+
+  const minutes = Math.floor(remaining / 60)
+  const seconds = Math.floor(remaining % 60)
+  return isEnglish ? `${minutes}m ${seconds}s` : `${minutes}分${seconds}秒`
+}
+
+// Cache hit rate formatting
+export function formatHitRate(rate: number | undefined): string {
+  if (typeof rate !== 'number' || Number.isNaN(rate)) return '-'
+  return `${rate.toFixed(2)}%`
+}
+
+// Rate limit formatting (supports "inherit" semantics: null = inherit system default)
+export function formatRateLimitInheritable(rateLimit?: number | null): string {
+  if (rateLimit == null) return getI18nLocale() === 'en-US' ? 'Use system default' : '跟随系统'
+  if (rateLimit === 0) return getI18nLocale() === 'en-US' ? 'No limit' : '不限速'
+  return `${rateLimit}/min`
+}
+
+// Rate limit formatting (simple: null/0 both mean unlimited)
+export function formatRateLimitSimple(rateLimit?: number | null): string {
+  if (rateLimit == null || rateLimit === 0) return getI18nLocale() === 'en-US' ? 'No limit' : '不限速'
+  return `${rateLimit}/min`
+}
+
+// Rate limit state helpers
+export function isRateLimitInherited(rateLimit?: number | null): boolean {
+  return rateLimit == null
+}
+
+export function isRateLimitUnlimited(rateLimit?: number | null): boolean {
+  return rateLimit === 0
+}
+
+export function formatShortRequestId(value: string | null | undefined): string {
+  const trimmed = value?.trim()
+  if (!trimmed) return '-'
+  if (trimmed.length <= 12) return trimmed
+
+  const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)
+  if (uuidLike) {
+    return trimmed.slice(0, 8)
+  }
+
+  return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`
+}

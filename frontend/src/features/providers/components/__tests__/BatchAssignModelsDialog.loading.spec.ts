@@ -1,0 +1,398 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createApp, defineComponent, h, nextTick, ref, type App } from 'vue'
+
+import BatchAssignModelsDialog from '../BatchAssignModelsDialog.vue'
+
+const globalModelMocks = vi.hoisted(() => ({
+  getGlobalModels: vi.fn(),
+}))
+
+const endpointMocks = vi.hoisted(() => ({
+  getProviderModels: vi.fn(),
+  getProviderKeys: vi.fn(),
+  batchAssignModelsToProvider: vi.fn(),
+  deleteModel: vi.fn(),
+}))
+
+vi.mock('@/api/endpoints/global-models', () => globalModelMocks)
+vi.mock('@/api/endpoints', () => endpointMocks)
+vi.mock('@/composables/useToast', () => ({
+  useToast: () => ({
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+  }),
+}))
+vi.mock('@/composables/useConfirm', () => ({
+  useConfirm: () => ({
+    confirmWarning: vi.fn().mockResolvedValue(true),
+  }),
+}))
+vi.mock('@/features/providers/composables/useUpstreamModelsCache', () => ({
+  useUpstreamModelsCache: () => ({
+    fetchModels: vi.fn(),
+  }),
+}))
+vi.mock('@/features/models/components/GlobalModelFormDialog.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'GlobalModelFormDialogStub',
+      props: {
+        open: { type: Boolean, default: false },
+        model: { type: Object, default: null },
+        zIndex: { type: Number, default: undefined },
+      },
+      emits: ['update:open', 'success'],
+      setup(props, { emit }) {
+        return () => {
+          if (!props.open) return null
+          return h('div', { 'data-testid': 'global-model-form-dialog-stub' }, [
+            h('button', {
+              type: 'button',
+              'data-testid': 'global-model-form-dialog-stub-success',
+              onClick: () => emit('success'),
+            }, 'submit'),
+          ])
+        }
+      },
+    }),
+  }
+})
+vi.mock('@/components/ui/dialog/Dialog.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'DialogStub',
+      setup: (_props, { slots }) => () => h('section', [slots.default?.(), slots.footer?.()]),
+    }),
+  }
+})
+vi.mock('@/components/ui', async () => {
+  const { defineComponent } = await import('vue')
+  const passthrough = (name: string) => defineComponent({
+    name,
+    inheritAttrs: false,
+    setup: (_props, { slots }) => () => slots.default?.(),
+  })
+  return {
+    DropdownMenu: passthrough('DropdownMenuStub'),
+    DropdownMenuTrigger: passthrough('DropdownMenuTriggerStub'),
+    DropdownMenuContent: passthrough('DropdownMenuContentStub'),
+    DropdownMenuItem: passthrough('DropdownMenuItemStub'),
+  }
+})
+
+const mountedApps: Array<{ app: App, root: HTMLElement }> = []
+
+async function settle() {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve()
+    await nextTick()
+  }
+}
+
+beforeEach(() => {
+  globalModelMocks.getGlobalModels.mockReset()
+  globalModelMocks.getGlobalModels.mockResolvedValue({ models: [], total: 0 })
+  endpointMocks.getProviderModels.mockReset()
+  endpointMocks.getProviderModels.mockResolvedValue([])
+  endpointMocks.getProviderKeys.mockReset()
+  endpointMocks.getProviderKeys.mockResolvedValue([])
+  endpointMocks.batchAssignModelsToProvider.mockReset()
+  endpointMocks.deleteModel.mockReset()
+})
+
+afterEach(() => {
+  for (const { app, root } of mountedApps.splice(0)) {
+    app.unmount()
+    root.remove()
+  }
+})
+
+function createGlobalModel(id: string, name: string, displayName = name) {
+  return {
+    id,
+    name,
+    display_name: displayName,
+    is_active: true,
+    default_tiered_pricing: { tiers: [] },
+    created_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+function createProviderModel(id: string, globalModelId: string) {
+  return {
+    id,
+    provider_id: 'provider-1',
+    global_model_id: globalModelId,
+    provider_model_name: globalModelId,
+    is_active: true,
+    is_available: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+function visibleModelIds(root: HTMLElement): string[] {
+  return Array.from(root.querySelectorAll('[data-testid^="batch-assign-model-"]'))
+    .map(node => node.getAttribute('data-testid')?.replace('batch-assign-model-', '') ?? '')
+    .filter(Boolean)
+}
+
+describe('BatchAssignModelsDialog loading', () => {
+  it('loads model choices when lazily mounted in the open state', async () => {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({
+      setup() {
+        return () => h(BatchAssignModelsDialog, {
+          open: true,
+          providerId: 'provider-1',
+          providerName: 'Provider One',
+        })
+      },
+    }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+
+    await settle()
+
+    expect(globalModelMocks.getGlobalModels).toHaveBeenCalledOnce()
+    expect(globalModelMocks.getGlobalModels).toHaveBeenCalledWith({ limit: 1000 })
+    expect(endpointMocks.getProviderModels).toHaveBeenCalledWith('provider-1')
+    expect(endpointMocks.getProviderKeys).toHaveBeenCalledWith('provider-1')
+  })
+
+  it('pins already associated models to the top of the list', async () => {
+    globalModelMocks.getGlobalModels.mockResolvedValue({
+      models: [
+        createGlobalModel('gm-zeta', 'zeta-model', 'Zeta'),
+        createGlobalModel('gm-alpha', 'alpha-model', 'Alpha'),
+        createGlobalModel('gm-mu', 'mu-model', 'Mu'),
+      ],
+      total: 3,
+    })
+    endpointMocks.getProviderModels.mockResolvedValue([
+      createProviderModel('pm-mu', 'gm-mu'),
+    ])
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({
+      setup() {
+        return () => h(BatchAssignModelsDialog, {
+          open: true,
+          providerId: 'provider-1',
+        })
+      },
+    }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+  })
+
+  it('keeps selected matches pinned above other search results', async () => {
+    globalModelMocks.getGlobalModels.mockResolvedValue({
+      models: [
+        createGlobalModel('gm-beta', 'beta-flash', 'Beta Flash'),
+        createGlobalModel('gm-alpha', 'alpha-flash', 'Alpha Flash'),
+        createGlobalModel('gm-other', 'other-model', 'Other'),
+      ],
+      total: 3,
+    })
+    endpointMocks.getProviderModels.mockResolvedValue([
+      createProviderModel('pm-beta', 'gm-beta'),
+    ])
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({
+      setup() {
+        return () => h(BatchAssignModelsDialog, {
+          open: true,
+          providerId: 'provider-1',
+        })
+      },
+    }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+
+    const search = root.querySelector('input') as HTMLInputElement
+    search.value = 'flash'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+
+    expect(visibleModelIds(root)).toEqual(['gm-beta', 'gm-alpha'])
+  })
+})
+
+describe('BatchAssignModelsDialog selection ordering', () => {
+  async function mountDialog() {
+    globalModelMocks.getGlobalModels.mockResolvedValue({
+      models: [
+        createGlobalModel('gm-zeta', 'zeta-model', 'Zeta'),
+        createGlobalModel('gm-alpha', 'alpha-model', 'Alpha'),
+        createGlobalModel('gm-mu', 'mu-model', 'Mu'),
+      ],
+      total: 3,
+    })
+    endpointMocks.getProviderModels.mockResolvedValue([
+      createProviderModel('pm-mu', 'gm-mu'),
+    ])
+
+    const open = ref(true)
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({
+      setup() {
+        return () => open.value ? h(BatchAssignModelsDialog, {
+          open: true,
+          providerId: 'provider-1',
+          'onUpdate:open': (value: boolean) => { open.value = value },
+        }) : null
+      },
+    }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+    return { root, open }
+  }
+
+  function modelRow(root: HTMLElement, id: string): HTMLElement {
+    return root.querySelector(`[data-testid="batch-assign-model-${id}"]`) as HTMLElement
+  }
+
+  it('returns a saved model to name order immediately when unchecked', async () => {
+    const { root } = await mountDialog()
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+
+    modelRow(root, 'gm-mu').click()
+    await settle()
+
+    expect(visibleModelIds(root)).toEqual(['gm-alpha', 'gm-mu', 'gm-zeta'])
+    expect(modelRow(root, 'gm-mu').querySelector('.bg-primary')).toBeNull()
+
+    modelRow(root, 'gm-mu').click()
+    await settle()
+
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+  })
+
+  it('keeps newly checked models in name order until saved, including search results', async () => {
+    const { root } = await mountDialog()
+
+    modelRow(root, 'gm-zeta').click()
+    await settle()
+
+    expect(modelRow(root, 'gm-zeta').querySelector('.bg-primary')).not.toBeNull()
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+    expect(endpointMocks.batchAssignModelsToProvider).not.toHaveBeenCalled()
+
+    const search = root.querySelector('input') as HTMLInputElement
+    search.value = 'model'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+
+    modelRow(root, 'gm-zeta').click()
+    await settle()
+
+    expect(modelRow(root, 'gm-zeta').querySelector('.bg-primary')).toBeNull()
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+  })
+
+  it('pins a newly associated model when reopened after saving', async () => {
+    endpointMocks.batchAssignModelsToProvider.mockResolvedValue({
+      success: [{ global_model_id: 'gm-zeta', global_model_name: 'zeta-model', model_id: 'pm-zeta' }],
+      errors: [],
+    })
+    const { root, open } = await mountDialog()
+
+    modelRow(root, 'gm-zeta').click()
+    await settle()
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-alpha', 'gm-zeta'])
+
+    const saveButton = Array.from(root.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === '保存') as HTMLButtonElement
+    saveButton.click()
+    await settle()
+
+    expect(endpointMocks.batchAssignModelsToProvider).toHaveBeenCalledWith('provider-1', ['gm-zeta'])
+    expect(open.value).toBe(false)
+
+    endpointMocks.getProviderModels.mockResolvedValue([
+      createProviderModel('pm-mu', 'gm-mu'),
+      createProviderModel('pm-zeta', 'gm-zeta'),
+    ])
+    open.value = true
+    await settle()
+
+    expect(visibleModelIds(root)).toEqual(['gm-mu', 'gm-zeta', 'gm-alpha'])
+  })
+})
+
+describe('BatchAssignModelsDialog create model entry', () => {
+  async function mountDialog() {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({
+      setup() {
+        return () => h(BatchAssignModelsDialog, {
+          open: true,
+          providerId: 'provider-1',
+        })
+      },
+    }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+    await settle()
+    return root
+  }
+
+  it('opens the unified model dialog from the create button', async () => {
+    const root = await mountDialog()
+    expect(root.querySelector('[data-testid="global-model-form-dialog-stub"]')).toBeNull()
+
+    const createButton = root.querySelector('[data-testid="batch-assign-create-model"]') as HTMLButtonElement
+    expect(createButton).toBeTruthy()
+    createButton.click()
+    await settle()
+
+    expect(root.querySelector('[data-testid="global-model-form-dialog-stub"]')).not.toBeNull()
+  })
+
+  it('refreshes the global model list after a model is created', async () => {
+    globalModelMocks.getGlobalModels
+      .mockResolvedValueOnce({
+        models: [createGlobalModel('gm-old', 'old-model', 'Old Model')],
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        models: [
+          createGlobalModel('gm-old', 'old-model', 'Old Model'),
+          createGlobalModel('gm-new', 'new-model', 'New Model'),
+        ],
+        total: 2,
+      })
+
+    const root = await mountDialog()
+    expect(visibleModelIds(root)).toEqual(['gm-old'])
+
+    const createButton = root.querySelector('[data-testid="batch-assign-create-model"]') as HTMLButtonElement
+    createButton.click()
+    await settle()
+
+    const successButton = root.querySelector('[data-testid="global-model-form-dialog-stub-success"]') as HTMLButtonElement
+    expect(successButton).toBeTruthy()
+    successButton.click()
+    await settle()
+
+    expect(globalModelMocks.getGlobalModels).toHaveBeenCalledTimes(2)
+    expect(visibleModelIds(root)).toEqual(['gm-new', 'gm-old'])
+  })
+})

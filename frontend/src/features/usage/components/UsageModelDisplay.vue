@@ -1,0 +1,227 @@
+<template>
+  <div
+    class="flex min-w-0 max-w-full flex-col gap-0.5"
+    :class="shouldStackBadges && stackFullWidth ? 'w-full items-start' : 'items-start'"
+    :data-usage-model-layout="shouldStackBadges ? 'stacked' : 'inline'"
+    :data-request-detail-model-layout="context === 'detail'
+      ? (shouldStackBadges ? 'stacked' : 'inline')
+      : undefined"
+  >
+    <div
+      class="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+      :class="modelRowClass"
+    >
+      <span
+        class="min-w-0 truncate"
+        :class="modelClass"
+        data-usage-model-source
+      >{{ record.model }}</span>
+      <template v-if="hasModelFacts">
+        <div
+          class="order-last basis-full flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground"
+          data-usage-model-facts
+        >
+          <span
+            v-if="mappingModel"
+            class="min-w-0 break-all whitespace-normal"
+            data-usage-model-mapping
+          ><span class="mr-1 text-[10px] text-muted-foreground/70">{{ t('ui.mappedModel') }}</span>{{ mappingModel }}</span>
+          <span
+            v-if="responseModel"
+            class="min-w-0 break-all whitespace-normal"
+            data-usage-model-response
+          ><span class="mr-1 text-[10px] text-muted-foreground/70">{{ t('ui.responseModel') }}</span>{{ responseModel }}</span>
+        </div>
+      </template>
+      <template v-if="!shouldStackBadges">
+        <Badge
+          v-for="badge in modelBadges"
+          :key="badge.key"
+          :data-usage-model-badge="badge.key"
+          :data-request-detail-model-badge="context === 'detail' ? badge.key : undefined"
+          :variant="badge.variant"
+          class="h-4 max-w-full shrink-0 truncate rounded-full px-1.5 text-[10px] leading-4"
+          :class="badge.className"
+          :title="badge.title"
+          :aria-label="badge.ariaLabel"
+        >
+          {{ badge.label }}
+        </Badge>
+      </template>
+    </div>
+
+    <div
+      v-if="shouldStackBadges && modelBadges.length > 0"
+      class="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+      data-usage-model-badges-row
+      :data-request-detail-model-badges-row="context === 'detail' ? '' : undefined"
+    >
+      <Badge
+        v-for="badge in modelBadges"
+        :key="badge.key"
+        :data-usage-model-badge="badge.key"
+        :data-request-detail-model-badge="context === 'detail' ? badge.key : undefined"
+        :variant="badge.variant"
+        class="h-4 max-w-full shrink-0 truncate rounded-full px-1.5 text-[10px] leading-4"
+        :class="badge.className"
+        :title="badge.title"
+        :aria-label="badge.ariaLabel"
+      >
+        {{ badge.label }}
+      </Badge>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useI18n } from '@/i18n'
+
+import { computed } from 'vue'
+
+import { Badge } from '@/components/ui'
+import { isCyberPolicyError } from '../utils/cyberError'
+import { formatServiceTierFact } from '../utils/service-tier'
+
+type ModelBadgeKey = 'compact' | 'reasoning' | 'fast' | 'service-tier' | 'cyber' | 'reasoning_tokens'
+
+interface ModelBadgePresentation {
+  key: ModelBadgeKey
+  label: string
+  variant: 'outline' | 'outline-transparent'
+  className: string
+  title: string
+  ariaLabel: string
+}
+
+interface UsageModelDisplayRecord {
+  model: string
+  target_model?: string | null
+  response_model?: string | null
+  request_type?: string | null
+  requested_reasoning_effort?: string | null
+  reasoning_effort?: string | null
+  service_tier?: string | null
+  reasoning_tokens?: number
+  error_message?: string | null
+}
+
+const props = withDefaults(defineProps<{
+  record: UsageModelDisplayRecord
+  modelClass?: string
+  modelRowClass?: string
+  context?: 'usage' | 'detail'
+  cyber?: boolean | null
+  stackFullWidth?: boolean
+  showServiceTierBadge?: boolean
+  showCyberBadge?: boolean
+  showReasoningBadge?: boolean
+}>(), {
+  modelClass: '',
+  modelRowClass: '',
+  context: 'usage',
+  cyber: null,
+  stackFullWidth: false,
+  showServiceTierBadge: true,
+  showCyberBadge: true,
+  showReasoningBadge: true,
+})
+
+const { t } = useI18n()
+
+const mappingModel = computed(() => {
+  const targetModel = normalizeText(props.record.target_model)
+  if (targetModel && targetModel !== normalizeText(props.record.model)) return targetModel
+  return null
+})
+
+const responseModel = computed(() => {
+  const response = normalizeText(props.record.response_model)
+  if (response && response !== normalizeText(props.record.model)) return response
+  return null
+})
+
+const hasModelFacts = computed(() => mappingModel.value !== null || responseModel.value !== null)
+
+const reasoningLabel = computed(() => {
+  const requested = normalizeText(props.record.requested_reasoning_effort)
+  const actual = normalizeText(props.record.reasoning_effort)
+  if (requested && actual && requested.toLowerCase() !== actual.toLowerCase()) {
+    return `${requested} -> ${actual}`
+  }
+  return actual ?? requested
+})
+
+const modelBadges = computed<ModelBadgePresentation[]>(() => {
+  const badges: ModelBadgePresentation[] = []
+  if (normalizeText(props.record.request_type)?.toLowerCase() === 'compact') {
+    badges.push({
+      key: 'compact',
+      get label() { return t('ui.sessionCompaction') },
+      variant: 'outline',
+      className: 'border-sky-500/30 bg-sky-500/5 text-sky-700 dark:text-sky-300',
+      get title() { return t('ui.sessionCompaction') },
+      ariaLabel: '会话压缩',
+    })
+  }
+  if (props.showReasoningBadge && reasoningLabel.value) {
+    badges.push({
+      key: 'reasoning',
+      label: reasoningLabel.value,
+      variant: 'outline',
+      className: 'border-primary/30 bg-primary/5 text-primary',
+      title: `Reasoning: ${reasoningLabel.value}`,
+      ariaLabel: `Reasoning: ${reasoningLabel.value}`,
+    })
+  }
+
+  const serviceTier = formatServiceTierFact(props.record.service_tier)
+  if (props.showServiceTierBadge && serviceTier
+    && !['auto', 'default', 'standard'].includes(serviceTier.toLowerCase())) {
+    badges.push({
+      key: serviceTier === 'Fast' ? 'fast' : 'service-tier',
+      label: serviceTier,
+      variant: 'outline-transparent',
+      className: 'text-blue-500 dark:text-blue-300',
+      title: `上游请求档位：${serviceTier}\n计费档位：${serviceTier}`,
+      ariaLabel: `上游请求档位：${serviceTier}，计费档位：${serviceTier}`,
+    })
+  }
+
+  if (props.showCyberBadge && (props.cyber ?? isCyberPolicyError(props.record.error_message))) {
+    badges.push({
+      key: 'cyber',
+      label: 'Cyber',
+      variant: 'outline',
+      className: 'border-primary/30 bg-primary/5 text-rose-500 dark:text-rose-300',
+      get title() { return t('ui.rejectedByUpstreamCyberPolicy') },
+      ariaLabel: '上游 Cyber Policy 拒绝',
+    })
+  }
+  if (typeof props.record.reasoning_tokens === 'number' && props.record.reasoning_tokens > 0) {
+    badges.push({
+      key: 'reasoning_tokens',
+      label: `推理 ${formatCompactTokens(props.record.reasoning_tokens)}`,
+      variant: 'outline-transparent',
+      className: 'text-muted-foreground',
+      title: `推理 Token 数：${props.record.reasoning_tokens}`,
+      ariaLabel: `推理 Token 数：${props.record.reasoning_tokens}`,
+    })
+  }
+  return badges
+})
+
+const shouldStackBadges = computed(() => (
+  !hasModelFacts.value && modelBadges.value.length >= 3
+))
+
+function normalizeText(value: string | null | undefined): string | null {
+  const normalized = value?.trim()
+  return normalized || null
+}
+
+function formatCompactTokens(value: number): string {
+  if (value < 1000) return `${value} Tokens`
+  return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}K Tokens`
+}
+
+</script>
