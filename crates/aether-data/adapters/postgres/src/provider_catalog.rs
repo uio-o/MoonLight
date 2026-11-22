@@ -1526,7 +1526,7 @@ WHERE id = $1
 UPDATE providers
 SET config = $3, updated_at = NOW()
 WHERE id = $1
-  AND config::jsonb IS NOT DISTINCT FROM $2::jsonb
+  AND ($2::jsonb IS NULL OR config::jsonb IS NOT DISTINCT FROM $2::jsonb)
 "#,
         )
         .bind(&update.provider_id)

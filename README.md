@@ -2,7 +2,12 @@
   <img src="frontend/public/aether_adaptive.svg" width="120" height="120" alt="Aether Logo">
 </p>
 
-<h1 align="center">Aether</h1>
+<h1 align="center">moomlight</h1>
+
+<p align="center">
+  <strong>基于 <a href="https://github.com/fawney19/Aether">fawney19/Aether</a> 开发</strong><br>
+  上游基线：<code>main @ ae2b9c9</code>（2026-11-18）· 沿用 Aether 非商业开源许可证，详见 <a href="#许可证">LICENSE</a>
+</p>
 
 <p align="center">
   <strong>一站式 AI 基础设施平台</strong><br>

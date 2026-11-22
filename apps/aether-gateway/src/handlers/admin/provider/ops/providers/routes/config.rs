@@ -56,7 +56,15 @@ pub(super) async fn handle_admin_provider_ops_save_config(
         provider_config.insert("provider_ops".to_string(), snapshot.provider_ops_config);
         let update = ProviderCatalogProviderConfigCasUpdate {
             provider_id: snapshot.provider.id.clone(),
-            expected_config: snapshot.provider.config.clone(),
+            // A manual save is an explicit operator action and must always win
+            // over the runtime credential cache. Comparing the whole config
+            // here used to fail with 409 whenever the cached expiry timestamp
+            // could not survive the JSON number round-trip (f64 precision),
+            // which made saving a provider impossible once the runtime had
+            // written its credential cache. Passing no expected config makes
+            // the update unconditional; the runtime write-back path keeps its
+            // compare-and-swap guard.
+            expected_config: None,
             config: Some(serde_json::Value::Object(provider_config)),
         };
         if state

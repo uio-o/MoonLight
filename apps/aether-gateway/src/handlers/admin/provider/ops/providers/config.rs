@@ -45,7 +45,9 @@ impl std::fmt::Debug for AdminProviderOpsCredentialSnapshot {
 pub(super) struct AdminProviderOpsMergedCredentialSnapshot {
     pub(super) provider: StoredProviderCatalogProvider,
     pub(super) credentials: serde_json::Map<String, serde_json::Value>,
-    pub(super) saved_binding: ProviderOpsCredentialBinding,
+    /// `None` when the provider has no stored Provider Ops config yet
+    /// (first-time save); there is no saved binding to merge or migrate.
+    pub(super) saved_binding: Option<ProviderOpsCredentialBinding>,
     pub(super) reused_saved_secret: bool,
 }
 
@@ -200,9 +202,22 @@ fn admin_provider_ops_sensitive_placeholder_or_empty(value: Option<&serde_json::
 pub(super) async fn admin_provider_ops_merge_credentials(
     state: &AdminAppState<'_>,
     architecture_id: &str,
+    request_auth_type: &str,
     provider: &StoredProviderCatalogProvider,
     mut request_credentials: serde_json::Map<String, serde_json::Value>,
 ) -> Result<AdminProviderOpsMergedCredentialSnapshot, String> {
+    if admin_provider_ops_config_object(provider).is_none() {
+        // First-time Provider Ops configuration: nothing is stored yet, so
+        // there are no saved credentials to decrypt or migrate. Use the
+        // request credentials as-is, mirroring the first-configuration
+        // branch of the verify route.
+        return Ok(AdminProviderOpsMergedCredentialSnapshot {
+            provider: provider.clone(),
+            credentials: request_credentials,
+            saved_binding: None,
+            reused_saved_secret: false,
+        });
+    }
     let snapshot = admin_provider_ops_credential_snapshot(state, provider)
         .await
         .map_err(|_| "已保存的 Provider Ops 凭据无法解密或迁移".to_string())?;
@@ -213,9 +228,19 @@ pub(super) async fn admin_provider_ops_merge_credentials(
         saved_credentials.retain(|key, _| !key.starts_with('_'));
     }
 
+    // Switching the connector auth type replaces the whole credential
+    // set (session_login uses email/password, api_key uses refresh_token,
+    // ...). Reusing stored secrets across that switch would resurrect
+    // fields that belong to the previous auth type and would trip the
+    // "must re-enter credentials" guard below, so only reuse secrets when
+    // the auth type stays the same.
+    let auth_type_stays_the_same = snapshot.binding.auth_type == request_auth_type;
     let mut reused_saved_secret = false;
     for field in PROVIDER_OPS_PERSISTENT_SECRET_FIELDS {
         if field.starts_with('_') {
+            continue;
+        }
+        if !auth_type_stays_the_same {
             continue;
         }
         if admin_provider_ops_sensitive_placeholder_or_empty(request_credentials.get(*field))
@@ -239,7 +264,7 @@ pub(super) async fn admin_provider_ops_merge_credentials(
     Ok(AdminProviderOpsMergedCredentialSnapshot {
         provider: snapshot.provider,
         credentials: request_credentials,
-        saved_binding: snapshot.binding,
+        saved_binding: Some(snapshot.binding),
         reused_saved_secret,
     })
 }
@@ -355,7 +380,7 @@ pub(crate) async fn admin_provider_ops_credential_snapshot(
         }
 
         current = state
-            .read_provider_catalog_providers_by_ids(std::slice::from_ref(&current.id))
+            .read_provider_catalog_providers_by_ids(std::slice::from_ref(&provider.id))
             .await?
             .into_iter()
             .next()
@@ -417,6 +442,12 @@ pub(super) async fn persist_admin_provider_ops_runtime_credentials(
                 .into_iter()
                 .next());
         }
+        // The provider catalog read path keeps a short-lived cache, so an
+        // immediate retry would otherwise re-read the very same stale
+        // expected_config and never converge. Invalidate the catalog cache
+        // before re-reading so the next attempt compares against the row
+        // that is actually in the database right now.
+        state.app().invalidate_provider_runtime_state_caches();
         current = state
             .read_provider_catalog_providers_by_ids(std::slice::from_ref(&provider.id))
             .await?
@@ -448,18 +479,40 @@ pub(super) async fn build_admin_provider_ops_saved_config_value(
     let merged = admin_provider_ops_merge_credentials(
         state,
         normalized_architecture_id,
+        &auth_type,
         provider,
         payload.connector.credentials,
     )
     .await?;
-    let canonical_base_url = payload
+    let canonical_base_url = match payload
         .base_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| merged.saved_binding.destination.base_url());
+    {
+        Some(value) => value.to_string(),
+        None => match merged.saved_binding.as_ref() {
+            Some(saved_binding) => saved_binding.destination.base_url().to_string(),
+            None => {
+                // First-time save without an explicit base_url: resolve it
+                // from the provider endpoints, matching the verify route.
+                let endpoints = state
+                    .list_provider_catalog_endpoints_by_provider_ids(std::slice::from_ref(
+                        &provider.id,
+                    ))
+                    .await
+                    .map_err(|_| "无法读取 Provider 端点以解析 base_url".to_string())?;
+                resolve_admin_provider_ops_base_url(
+                    provider,
+                    &endpoints,
+                    admin_provider_ops_config_object(provider),
+                )
+                .ok_or_else(|| "请提供 API 地址".to_string())?
+            }
+        },
+    };
     let canonical_destination =
-        canonicalize_provider_ops_base_url(canonical_base_url).map_err(ToString::to_string)?;
+        canonicalize_provider_ops_base_url(&canonical_base_url).map_err(ToString::to_string)?;
 
     let actions = payload
         .actions
@@ -494,15 +547,19 @@ pub(super) async fn build_admin_provider_ops_saved_config_value(
             .ok_or_else(|| "Provider Ops 配置格式无效".to_string())?,
         canonical_destination.base_url(),
     )?;
-    let same_secret_destination = merged.saved_binding.provider_id == new_binding.provider_id
-        && merged.saved_binding.architecture_id == new_binding.architecture_id
-        && merged.saved_binding.auth_type == new_binding.auth_type
-        && merged.saved_binding.destination == new_binding.destination;
-    if merged.reused_saved_secret && !same_secret_destination {
-        return Err("修改 Provider Ops 架构、认证类型或目标地址时必须重新填写凭据".to_string());
+    if merged.reused_saved_secret {
+        let same_secret_destination = merged.saved_binding.as_ref().is_some_and(|saved_binding| {
+            saved_binding.provider_id == new_binding.provider_id
+                && saved_binding.architecture_id == new_binding.architecture_id
+                && saved_binding.auth_type == new_binding.auth_type
+                && saved_binding.destination == new_binding.destination
+        });
+        if !same_secret_destination {
+            return Err("修改 Provider Ops 架构、认证类型或目标地址时必须重新填写凭据".to_string());
+        }
     }
     let mut merged_credentials = merged.credentials;
-    if merged.saved_binding != new_binding {
+    if merged.saved_binding.as_ref() != Some(&new_binding) {
         for field in PROVIDER_OPS_TRANSIENT_METADATA_FIELDS {
             merged_credentials.remove(*field);
         }
@@ -638,7 +695,11 @@ pub(super) async fn build_admin_provider_ops_config_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::{admin_provider_ops_credential_snapshot, open_provider_ops_credential};
+    use super::{
+        admin_provider_ops_credential_snapshot, admin_provider_ops_merge_credentials,
+        build_admin_provider_ops_saved_config_value, open_provider_ops_credential,
+        AdminProviderOpsSaveConfigRequest,
+    };
     use crate::data::GatewayDataState;
     use crate::handlers::admin::request::AdminAppState;
     use crate::AppState;
@@ -780,5 +841,132 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some(tampered.as_str())
         );
+    }
+
+    fn provider_without_provider_ops() -> StoredProviderCatalogProvider {
+        StoredProviderCatalogProvider::new(
+            TEST_PROVIDER_ID.to_string(),
+            "Provider Ops First Save Test".to_string(),
+            None,
+            "openai".to_string(),
+        )
+        .expect("provider should build")
+        .with_transport_fields(
+            true,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(json!({})),
+        )
+    }
+
+    #[tokio::test]
+    async fn first_time_provider_ops_merge_skips_saved_credential_snapshot() {
+        let provider = provider_without_provider_ops();
+        let (state, _repository) = state_with_provider(provider.clone());
+        let admin_state = AdminAppState::new(&state);
+        let mut credentials = serde_json::Map::new();
+        credentials.insert("api_key".to_string(), json!("first-time-secret"));
+
+        let merged = admin_provider_ops_merge_credentials(
+            &admin_state,
+            "generic_api",
+            "api_key",
+            &provider,
+            credentials,
+        )
+        .await
+        .expect("first-time Provider Ops configuration should not require saved credentials");
+        assert!(merged.saved_binding.is_none());
+        assert!(!merged.reused_saved_secret);
+        assert_eq!(merged.credentials["api_key"], json!("first-time-secret"));
+    }
+
+    #[tokio::test]
+    async fn first_time_provider_ops_save_builds_encrypted_config() {
+        let provider = provider_without_provider_ops();
+        let (state, _repository) = state_with_provider(provider.clone());
+        let admin_state = AdminAppState::new(&state);
+        let payload: AdminProviderOpsSaveConfigRequest = serde_json::from_value(json!({
+            "architecture_id": "generic_api",
+            "base_url": "https://provider.example.com",
+            "connector": {
+                "auth_type": "api_key",
+                "config": {},
+                "credentials": {
+                    "api_key": "first-time-secret"
+                }
+            }
+        }))
+        .expect("save payload should deserialize");
+
+        let snapshot = build_admin_provider_ops_saved_config_value(&admin_state, &provider, payload)
+            .await
+            .expect("first-time Provider Ops save should succeed (issue #810)");
+        assert_eq!(
+            snapshot.provider_ops_config["architecture_id"],
+            json!("generic_api")
+        );
+        let stored_api_key = snapshot
+            .provider_ops_config
+            .pointer("/connector/credentials/api_key")
+            .and_then(serde_json::Value::as_str)
+            .expect("saved config should carry the api_key");
+        assert_ne!(stored_api_key, "first-time-secret");
+        assert!(stored_api_key.starts_with("aether-provider-ops-credential-v2:"));
+    }
+
+    #[tokio::test]
+    async fn stored_provider_ops_credentials_are_reused_for_placeholder_fields() {
+        let provider = provider_with_api_key(TEST_API_KEY);
+        let (state, _repository) = state_with_provider(provider.clone());
+        let admin_state = AdminAppState::new(&state);
+        // The request omits the API key (masked placeholder), so the saved
+        // credential has to be reused instead of being treated as new input.
+        let mut credentials = serde_json::Map::new();
+        credentials.insert("api_key".to_string(), json!("********"));
+
+        let merged = admin_provider_ops_merge_credentials(
+            &admin_state,
+            "generic_api",
+            "api_key",
+            &provider,
+            credentials,
+        )
+        .await
+        .expect("stored Provider Ops credentials should merge");
+        assert!(merged.saved_binding.is_some());
+        assert!(merged.reused_saved_secret);
+        assert_eq!(merged.credentials["api_key"], TEST_API_KEY);
+    }
+
+    #[tokio::test]
+    async fn switching_auth_type_does_not_reuse_previous_auth_secrets() {
+        let provider = provider_with_api_key(TEST_API_KEY);
+        let (state, _repository) = state_with_provider(provider.clone());
+        let admin_state = AdminAppState::new(&state);
+        // The stored provider uses `api_key`; the request switches to
+        // `session_login` and does not carry an api_key, so the stored
+        // api_key must not be resurrected as a reused secret.
+        let mut credentials = serde_json::Map::new();
+        credentials.insert("email".to_string(), json!("owner@example.com"));
+        credentials.insert("password".to_string(), json!("new-password"));
+
+        let merged = admin_provider_ops_merge_credentials(
+            &admin_state,
+            "generic_api",
+            "session_login",
+            &provider,
+            credentials,
+        )
+        .await
+        .expect("switching the auth type should not fail");
+        assert!(!merged.reused_saved_secret);
+        assert_eq!(merged.credentials["password"], json!("new-password"));
+        assert!(!merged.credentials.contains_key("api_key"));
     }
 }
