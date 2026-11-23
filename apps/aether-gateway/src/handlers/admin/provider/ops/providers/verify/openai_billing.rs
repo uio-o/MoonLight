@@ -160,9 +160,9 @@ fn resolve_endpoint_url(
 
 fn status_failure(status: http::StatusCode) -> Option<Value> {
     match status {
-        http::StatusCode::UNAUTHORIZED => Some(admin_provider_ops_verify_failure(
-            "认证失败：API Key 无效",
-        )),
+        http::StatusCode::UNAUTHORIZED => {
+            Some(admin_provider_ops_verify_failure("认证失败：API Key 无效"))
+        }
         http::StatusCode::FORBIDDEN => Some(admin_provider_ops_verify_failure(
             "认证失败：API Key 无权查询计费信息",
         )),

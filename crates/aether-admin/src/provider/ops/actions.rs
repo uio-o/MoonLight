@@ -276,7 +276,12 @@ pub fn admin_provider_ops_openai_billing_balance_values(
         .unwrap_or("CNY")
         .to_string();
 
-    Ok((total_granted, total_used, total_granted - total_used, currency))
+    Ok((
+        total_granted,
+        total_used,
+        total_granted - total_used,
+        currency,
+    ))
 }
 
 fn parse_usage_api_balance_payload(
@@ -594,8 +599,9 @@ fn parse_subscription(value: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::{
-        attach_balance_checkin_outcome, parse_query_balance_payload, parse_sub2api_balance_payload,
-        ProviderOpsCheckinOutcome,
+        admin_provider_ops_openai_billing_balance_values, attach_balance_checkin_outcome,
+        parse_openai_billing_balance_payload, parse_query_balance_payload,
+        parse_sub2api_balance_payload, ProviderOpsCheckinOutcome,
     };
     use serde_json::{json, Map};
 
@@ -838,6 +844,30 @@ mod tests {
         assert!((used - 0.006046).abs() < 1e-9);
         assert!((available - 1.993954).abs() < 1e-9);
         assert_eq!(currency, "CNY");
+    }
+
+    #[test]
+    fn openai_billing_balance_payload_reports_available_balance() {
+        let config = json!({}).as_object().cloned().expect("config");
+
+        let payload = parse_openai_billing_balance_payload(
+            &config,
+            &json!({"hard_limit_usd": 2}),
+            &json!({"total_usage": 0.6046}),
+        )
+        .expect("both responses should parse");
+
+        // 默认 usage_divisor 是 100，total_usage 的单位是分，要换算成元。
+        let used = payload["total_used"].as_f64().expect("total_used");
+        let available = payload["total_available"].as_f64().expect("total_available");
+        assert!((used - 0.006046).abs() < 1e-9);
+        assert!((available - 1.993954).abs() < 1e-9);
+
+        assert_eq!(payload["total_granted"], json!(2.0));
+        assert_eq!(payload["currency"], json!("CNY"));
+        assert_eq!(payload["extra"]["hard_limit_usd"], json!(2.0));
+        let raw_usage = payload["extra"]["total_usage_raw"].as_f64().expect("raw");
+        assert!((raw_usage - 0.6046).abs() < 1e-9);
     }
 
     #[test]
