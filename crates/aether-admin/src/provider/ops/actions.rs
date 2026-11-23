@@ -221,6 +221,38 @@ pub fn parse_openai_billing_balance_payload(
     subscription_json: &Value,
     usage_json: &Value,
 ) -> Result<Value, String> {
+    let (total_granted, total_used, available, currency) =
+        admin_provider_ops_openai_billing_balance_values(
+            action_config,
+            subscription_json,
+            usage_json,
+        )?;
+
+    let mut extra = Map::new();
+    extra.insert("hard_limit_usd".to_string(), json!(total_granted));
+    extra.insert(
+        "total_usage_raw".to_string(),
+        json!(total_used * usage_divisor(action_config)),
+    );
+
+    Ok(build_balance_data(
+        Some(total_granted),
+        Some(total_used),
+        Some(available),
+        &currency,
+        extra,
+    ))
+}
+
+/// 从两个接口的响应里算出账户余额三元组：`(总额度, 已用金额, 可用余额)` 加货币代码。
+///
+/// 验证环节与「查询余额」动作共用这一套计算，避免同一个渠道在验证时显示一个数、
+/// 真正查余额时又是另一个数。任一侧响应缺字段都会返回 `Err`。
+pub fn admin_provider_ops_openai_billing_balance_values(
+    action_config: &Map<String, Value>,
+    subscription_json: &Value,
+    usage_json: &Value,
+) -> Result<(f64, f64, f64, String), String> {
     let subscription = subscription_json
         .as_object()
         .ok_or_else(|| "总额度接口响应格式无效".to_string())?;
@@ -241,19 +273,10 @@ pub fn parse_openai_billing_balance_payload(
     let currency = action_config
         .get("currency")
         .and_then(Value::as_str)
-        .unwrap_or("CNY");
+        .unwrap_or("CNY")
+        .to_string();
 
-    let mut extra = Map::new();
-    extra.insert("hard_limit_usd".to_string(), json!(total_granted));
-    extra.insert("total_usage_raw".to_string(), json!(raw_usage));
-
-    Ok(build_balance_data(
-        Some(total_granted),
-        Some(total_used),
-        Some(total_granted - total_used),
-        currency,
-        extra,
-    ))
+    Ok((total_granted, total_used, total_granted - total_used, currency))
 }
 
 fn parse_usage_api_balance_payload(
@@ -789,5 +812,73 @@ mod tests {
         assert_eq!(sub2api_error, "查询用户信息失败");
         assert!(!generic_error.contains("upstream-secret"));
         assert!(!sub2api_error.contains("upstream-secret"));
+    }
+
+    #[test]
+    fn openai_billing_balance_values_computes_account_level_balance() {
+        let config = json!({"usage_divisor": 100, "currency": "CNY"})
+            .as_object()
+            .cloned()
+            .expect("config");
+        let subscription = json!({
+            "object": "billing_subscription",
+            "hard_limit_usd": 2,
+            "system_hard_limit_usd": 2,
+            "soft_limit_usd": 2,
+            "access_until": 0
+        });
+        // total_usage 单位是分，除过 usage_divisor 之后才是元。
+        let usage = json!({"object": "list", "total_usage": 0.6046});
+
+        let (granted, used, available, currency) =
+            admin_provider_ops_openai_billing_balance_values(&config, &subscription, &usage)
+                .expect("both responses should parse");
+
+        assert_eq!(granted, 2.0);
+        assert!((used - 0.006046).abs() < 1e-9);
+        assert!((available - 1.993954).abs() < 1e-9);
+        assert_eq!(currency, "CNY");
+    }
+
+    #[test]
+    fn openai_billing_balance_values_rejects_missing_fields() {
+        let config = json!({}).as_object().cloned().expect("config");
+
+        let missing_granted = admin_provider_ops_openai_billing_balance_values(
+            &config,
+            &json!({"object": "billing_subscription"}),
+            &json!({"total_usage": 1}),
+        )
+        .expect_err("missing hard_limit_usd should be rejected");
+        assert!(missing_granted.contains("hard_limit_usd"));
+
+        let missing_usage = admin_provider_ops_openai_billing_balance_values(
+            &config,
+            &json!({"hard_limit_usd": 2}),
+            &json!({"object": "list"}),
+        )
+        .expect_err("missing total_usage should be rejected");
+        assert!(missing_usage.contains("total_usage"));
+    }
+
+    #[test]
+    fn openai_billing_balance_values_honours_custom_divisor_and_currency() {
+        let config = json!({"usage_divisor": 1, "currency": "USD"})
+            .as_object()
+            .cloned()
+            .expect("config");
+
+        let (granted, used, available, currency) =
+            admin_provider_ops_openai_billing_balance_values(
+                &config,
+                &json!({"hard_limit_usd": 10}),
+                &json!({"total_usage": 2.5}),
+            )
+            .expect("both responses should parse");
+
+        assert_eq!(granted, 10.0);
+        assert_eq!(used, 2.5);
+        assert_eq!(available, 7.5);
+        assert_eq!(currency, "USD");
     }
 }

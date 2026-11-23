@@ -4,9 +4,10 @@ pub mod config;
 pub mod verify;
 
 pub use self::actions::{
-    attach_balance_checkin_outcome, parse_openai_billing_balance_payload,
-    parse_query_balance_payload, parse_sub2api_balance_payload,
-    parse_yescode_combined_balance_payload, ProviderOpsCheckinOutcome,
+    admin_provider_ops_openai_billing_balance_values, attach_balance_checkin_outcome,
+    parse_openai_billing_balance_payload, parse_query_balance_payload,
+    parse_sub2api_balance_payload, parse_yescode_combined_balance_payload,
+    ProviderOpsCheckinOutcome,
 };
 pub use self::architectures::{
     admin_provider_ops_is_supported_auth_type, get_architecture, list_architectures,

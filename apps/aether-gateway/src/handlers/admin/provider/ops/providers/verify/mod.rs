@@ -1,3 +1,4 @@
+mod openai_billing;
 mod proxy;
 mod request;
 mod sub2api;
@@ -43,6 +44,21 @@ pub(super) async fn admin_provider_ops_local_verify_response(
 
     let proxy_snapshot =
         proxy::admin_provider_ops_resolve_proxy_snapshot(state, Some(config)).await;
+
+    // OpenAI 兼容计费接口必须同时请求 subscription 与 usage 两个接口才能算出账户
+    // 余额，且其响应没有 username/quota 字段，不能走下面的通用单请求 DirectGet 路径。
+    if architecture.architecture_id == "openai_billing" {
+        return openai_billing::admin_provider_ops_local_openai_billing_verify_response(
+            state,
+            base_url,
+            &architecture,
+            config,
+            credentials,
+            proxy_snapshot.as_ref(),
+        )
+        .await;
+    }
+
     if architecture.verify_mode == ProviderOpsVerifyMode::Sub2ApiExchange {
         return sub2api::admin_provider_ops_local_sub2api_verify_response(
             state,
