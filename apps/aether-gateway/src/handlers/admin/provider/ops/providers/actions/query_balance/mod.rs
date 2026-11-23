@@ -1,3 +1,4 @@
+mod openai_billing;
 mod sub2api;
 mod yescode;
 
@@ -46,6 +47,17 @@ pub(super) async fn admin_provider_ops_run_query_balance_action(
                 base_url,
                 action_config,
                 credentials,
+                proxy_snapshot,
+            )
+            .await;
+        }
+        ProviderOpsBalanceMode::OpenAiBillingDualRequest => {
+            return openai_billing::admin_provider_ops_openai_billing_balance_payload(
+                state,
+                provider_id,
+                base_url,
+                action_config,
+                headers,
                 proxy_snapshot,
             )
             .await;

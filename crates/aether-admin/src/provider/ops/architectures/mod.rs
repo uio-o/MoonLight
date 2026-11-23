@@ -4,6 +4,7 @@ mod done_hub;
 mod generic_api;
 mod nekocode;
 mod new_api;
+mod openai_billing;
 mod sub2api;
 mod usage_api;
 mod yescode;
@@ -22,6 +23,7 @@ pub enum ProviderOpsBalanceMode {
     SingleRequest,
     YescodeCombined,
     Sub2ApiDualRequest,
+    OpenAiBillingDualRequest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +100,7 @@ static PROVIDER_OPS_ARCHITECTURES: LazyLock<Vec<ProviderOpsArchitectureSpec>> =
             generic_api::spec(),
             nekocode::spec(),
             new_api::spec(),
+            openai_billing::spec(),
             sub2api::spec(),
             usage_api::spec(),
             yescode::spec(),
@@ -125,6 +128,7 @@ pub fn normalize_architecture_id(architecture_id: &str) -> &'static str {
         "" => "generic_api",
         "generic_api" => "generic_api",
         "new_api" => "new_api",
+        "openai_billing" => "openai_billing",
         "cubence" => "cubence",
         "done_hub" => "done_hub",
         "yescode" => "yescode",
@@ -188,6 +192,7 @@ fn default_action_config(architecture_id: &str, action_type: &str) -> Option<Map
         "generic_api" => generic_api::default_action_config(action_type),
         "nekocode" => nekocode::default_action_config(action_type),
         "new_api" => new_api::default_action_config(action_type),
+        "openai_billing" => openai_billing::default_action_config(action_type),
         "sub2api" => sub2api::default_action_config(action_type),
         "usage_api" => usage_api::default_action_config(action_type),
         "yescode" => yescode::default_action_config(action_type),
@@ -203,20 +208,62 @@ pub(super) fn json_object(value: Value) -> Map<String, Value> {
 mod tests {
     use super::{
         get_architecture, list_architectures, normalize_architecture_id, resolve_action_config,
+        ProviderOpsBalanceMode,
     };
     use serde_json::json;
 
     #[test]
     fn list_architectures_hides_generic_api_by_default() {
         let visible = list_architectures(false);
-        assert_eq!(visible.len(), 8);
+        assert_eq!(visible.len(), 9);
         assert!(visible
             .iter()
             .all(|item| item.architecture_id != "generic_api"));
 
         let all = list_architectures(true);
-        assert_eq!(all.len(), 9);
+        assert_eq!(all.len(), 10);
         assert!(all.iter().any(|item| item.architecture_id == "generic_api"));
+    }
+
+    #[test]
+    fn openai_billing_uses_account_level_dual_request_balance() {
+        let architecture = get_architecture("openai_billing").expect("architecture should exist");
+        assert_eq!(architecture.architecture_id, "openai_billing");
+        assert!(!architecture.hidden);
+        assert_eq!(
+            architecture.balance_mode,
+            ProviderOpsBalanceMode::OpenAiBillingDualRequest
+        );
+        assert_eq!(
+            architecture.verify_endpoint,
+            "/v1/dashboard/billing/subscription"
+        );
+        assert_eq!(
+            normalize_architecture_id("openai_billing"),
+            "openai_billing"
+        );
+
+        let resolved = resolve_action_config(
+            "openai_billing",
+            &json!({})
+                .as_object()
+                .cloned()
+                .expect("config should be object"),
+            "query_balance",
+            None,
+        )
+        .expect("action config should resolve");
+
+        assert_eq!(
+            resolved.get("subscription_endpoint"),
+            Some(&json!("/v1/dashboard/billing/subscription"))
+        );
+        assert_eq!(
+            resolved.get("usage_endpoint"),
+            Some(&json!("/v1/dashboard/billing/usage"))
+        );
+        assert_eq!(resolved.get("usage_divisor"), Some(&json!(100)));
+        assert_eq!(resolved.get("currency"), Some(&json!("CNY")));
     }
 
     #[test]

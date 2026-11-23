@@ -209,6 +209,53 @@ fn parse_new_api_balance_payload(
     ))
 }
 
+/// OpenAI 兼容的 `/dashboard/billing` 余额解析。
+///
+/// 这类接口把「账户总额度」和「账户已用金额」拆在两个请求里，且已用金额常以「分」为单位，
+/// 因此必须两次请求都拿到之后才能算出账户余额：
+/// `余额 = hard_limit_usd - total_usage / usage_divisor`。
+///
+/// 查询对象是账户：同一账户下任意一把 API 密钥鉴权，返回的都是同一份账户级数据。
+pub fn parse_openai_billing_balance_payload(
+    action_config: &Map<String, Value>,
+    subscription_json: &Value,
+    usage_json: &Value,
+) -> Result<Value, String> {
+    let subscription = subscription_json
+        .as_object()
+        .ok_or_else(|| "总额度接口响应格式无效".to_string())?;
+    let total_granted = admin_provider_ops_value_as_f64(
+        ["hard_limit_usd", "system_hard_limit_usd", "soft_limit_usd"]
+            .into_iter()
+            .find_map(|field| subscription.get(field)),
+    )
+    .ok_or_else(|| "响应缺少账户总额度字段 hard_limit_usd".to_string())?;
+
+    let usage = usage_json
+        .as_object()
+        .ok_or_else(|| "已用金额接口响应格式无效".to_string())?;
+    let raw_usage = admin_provider_ops_value_as_f64(usage.get("total_usage"))
+        .ok_or_else(|| "响应缺少已用金额字段 total_usage".to_string())?;
+    let total_used = raw_usage / usage_divisor(action_config);
+
+    let currency = action_config
+        .get("currency")
+        .and_then(Value::as_str)
+        .unwrap_or("CNY");
+
+    let mut extra = Map::new();
+    extra.insert("hard_limit_usd".to_string(), json!(total_granted));
+    extra.insert("total_usage_raw".to_string(), json!(raw_usage));
+
+    Ok(build_balance_data(
+        Some(total_granted),
+        Some(total_used),
+        Some(total_granted - total_used),
+        currency,
+        extra,
+    ))
+}
+
 fn parse_usage_api_balance_payload(
     action_config: &Map<String, Value>,
     response_json: &Value,
@@ -464,6 +511,12 @@ fn quota_divisor(action_config: &Map<String, Value>) -> f64 {
     admin_provider_ops_value_as_f64(action_config.get("quota_divisor"))
         .filter(|value| *value > 0.0)
         .unwrap_or(500000.0)
+}
+
+fn usage_divisor(action_config: &Map<String, Value>) -> f64 {
+    admin_provider_ops_value_as_f64(action_config.get("usage_divisor"))
+        .filter(|value| *value > 0.0)
+        .unwrap_or(100.0)
 }
 
 fn parse_rfc3339_unix_secs(value: Option<&Value>) -> Option<i64> {

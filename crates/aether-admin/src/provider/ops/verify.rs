@@ -367,7 +367,7 @@ pub fn admin_provider_ops_verify_headers(
 ) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     match normalize_architecture_id(architecture_id) {
-        "generic_api" | "usage_api" => {
+        "generic_api" | "usage_api" | "openai_billing" => {
             let api_key = credentials
                 .get("api_key")
                 .and_then(Value::as_str)
