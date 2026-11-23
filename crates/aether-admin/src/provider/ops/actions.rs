@@ -859,7 +859,9 @@ mod tests {
 
         // 默认 usage_divisor 是 100，total_usage 的单位是分，要换算成元。
         let used = payload["total_used"].as_f64().expect("total_used");
-        let available = payload["total_available"].as_f64().expect("total_available");
+        let available = payload["total_available"]
+            .as_f64()
+            .expect("total_available");
         assert!((used - 0.006046).abs() < 1e-9);
         assert!((available - 1.993954).abs() < 1e-9);
 
