@@ -1,0 +1,95 @@
+name: Republish image
+
+# 复用某次 Release run 已构建好的产物，直接重新打包并推送 Docker 镜像。
+# 用途：产物还在保留期内（默认 1 天）时，避免为了改一个镜像 tag 而重跑
+# 30 分钟的 Rust 交叉编译。也用于把镜像推到另一个（例如已公开的）GHCR 包。
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "目标镜像引用（含 tag）"
+        required: true
+        default: "ghcr.io/uio-o/aether:moomlight-v0.7.21"
+      run_id:
+        description: "复用哪个 Release run 的产物"
+        required: true
+        default: "45135582823"
+      version:
+        description: "写进镜像 label 的版本号"
+        required: true
+        default: "0.7.21"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  republish:
+    name: Republish ${{ inputs.image }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download build artifacts from release run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          for name in aether-gateway-linux-amd64 aether-gateway-linux-arm64 frontend-dist; do
+            id=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/artifacts" \
+              --jq ".artifacts[] | select(.name==\"${name}\" and .expired==false) | .id" | head -1)
+            if [ -z "${id}" ]; then
+              echo "::error::artifact ${name} not found or expired in run ${RUN_ID}"
+              exit 1
+            fi
+            echo "Downloading ${name} (artifact id ${id})"
+            curl -sSL --fail-with-body \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/actions/artifacts/${id}/zip" \
+              -o "artifacts/${name}.zip"
+            mkdir -p "artifacts/${name}"
+            unzip -q "artifacts/${name}.zip" -d "artifacts/${name}"
+          done
+
+      - name: Prepare dist layout
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp artifacts/aether-gateway-linux-amd64/aether-gateway dist/aether-gateway-amd64
+          cp artifacts/aether-gateway-linux-arm64/aether-gateway dist/aether-gateway-arm64
+          chmod +x dist/aether-gateway-amd64 dist/aether-gateway-arm64
+          cp -r artifacts/frontend-dist dist/frontend
+          ls -la dist
+          ls dist/frontend | head
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645ae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile.app
+          push: true
+          tags: ${{ inputs.image }}
+          platforms: linux/amd64,linux/arm64
+          labels: |
+            org.opencontainers.image.title=moomlight
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
