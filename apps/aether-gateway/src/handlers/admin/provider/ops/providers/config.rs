@@ -904,9 +904,10 @@ mod tests {
         }))
         .expect("save payload should deserialize");
 
-        let snapshot = build_admin_provider_ops_saved_config_value(&admin_state, &provider, payload)
-            .await
-            .expect("first-time Provider Ops save should succeed (issue #810)");
+        let snapshot =
+            build_admin_provider_ops_saved_config_value(&admin_state, &provider, payload)
+                .await
+                .expect("first-time Provider Ops save should succeed (issue #810)");
         assert_eq!(
             snapshot.provider_ops_config["architecture_id"],
             json!("generic_api")
