@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 const CODEX_DEFAULT_REASONING_EFFORT: &str = "medium";
 const CODEX_REASONING_ENCRYPTED_CONTENT_INCLUDE: &str = "reasoning.encrypted_content";
 const CODEX_PROMPT_CACHE_IDENTITY_NAMESPACE: &str =
-    "https://github.com/fawney19/Aether/codex/prompt-cache-identity/v1/";
+    "https://github.com/uio-o/MoonLight/codex/prompt-cache-identity/v1/";
 pub const CODEX_RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 pub const CODEX_MODEL_CATALOG_METADATA_FIELD: &str = "codex_models";
 const CODEX_OPENAI_RESPONSES_UNSUPPORTED_BODY_FIELDS: &[&str] = &[
