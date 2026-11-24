@@ -15,7 +15,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  GHCR_IMAGE: uio-o/moomlight
+  # Docker 镜像名必须全小写，所以品牌名 MoonLight 在这里写作 moonlight。
+  GHCR_IMAGE: uio-o/moonlight
 
 jobs:
   preflight:

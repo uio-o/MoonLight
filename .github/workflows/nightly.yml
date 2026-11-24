@@ -55,7 +55,8 @@ jobs:
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
           echo "short_sha=${sha:0:7}" >> "${GITHUB_OUTPUT}"
           echo "date=$(date -u +'%Y-%m-%d')" >> "${GITHUB_OUTPUT}"
-          echo "ghcr_image=ghcr.io/${repository_owner}/aether" >> "${GITHUB_OUTPUT}"
+          # 与 release.yml 的 GHCR_IMAGE 保持一致；Docker 镜像名必须全小写。
+          echo "ghcr_image=ghcr.io/${repository_owner}/moonlight" >> "${GITHUB_OUTPUT}"
           echo "Building main at ${sha}."
 
   # Keep the scheduled backend coverage in one place so it cannot drift from PR CI.
