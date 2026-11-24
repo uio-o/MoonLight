@@ -606,9 +606,9 @@ while result and result[-1].strip() == '':
 if result:
     result.append('')
 result.extend([
-    '# Managed by Aether',
+    '# Managed by MoonLight',
     '[model_providers.aether]',
-    'name = "Aether"',
+    'name = "MoonLight"',
     f'base_url = {{quote_toml(base_url)}}',
     'wire_api = "responses"',
     'requires_openai_auth = false',
@@ -729,9 +729,9 @@ if ($TargetCli -eq 'claude_code') {{
   if ($Result.Count -gt 0) {{ $Result.Add('') }}
   $EscapedBaseUrl = ($AetherBaseUrl.TrimEnd('/') + '/v1').Replace('\', '\\').Replace('"', '\"')
   $EscapedApiKey = $AetherApiKey.Replace('\', '\\').Replace('"', '\"')
-  $Result.Add('# Managed by Aether')
+  $Result.Add('# Managed by MoonLight')
   $Result.Add('[model_providers.aether]')
-  $Result.Add('name = "Aether"')
+  $Result.Add('name = "MoonLight"')
   $Result.Add("base_url = `"$EscapedBaseUrl`"")
   $Result.Add('wire_api = "responses"')
   $Result.Add('requires_openai_auth = false')

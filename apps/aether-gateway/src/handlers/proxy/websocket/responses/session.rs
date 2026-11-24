@@ -245,7 +245,7 @@ impl InitialMessageError {
                 "response.create.stream_id must be 1-256 ASCII letters, numbers, underscores, hyphens, or periods",
             ),
             Self::UnsupportedStreamId => Some(
-                "Aether currently supports only the implicit default WebSocket lane; omit response.create.stream_id",
+                "MoonLight currently supports only the implicit default WebSocket lane; omit response.create.stream_id",
             ),
         }
     }
@@ -1457,7 +1457,7 @@ mod tests {
                 "responses_websocket_named_stream_unsupported",
                 "unsupported_stream_id",
                 Some(
-                    "Aether currently supports only the implicit default WebSocket lane; omit response.create.stream_id",
+                    "MoonLight currently supports only the implicit default WebSocket lane; omit response.create.stream_id",
                 ),
                 1008,
                 false,

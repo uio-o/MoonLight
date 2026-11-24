@@ -343,7 +343,7 @@ async fn build_local_public_support_response(
                 .ok()
                 .flatten()
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
-                .unwrap_or_else(|| "Aether".to_string());
+                .unwrap_or_else(|| "MoonLight".to_string());
             let site_subtitle = state
                 .read_system_config_json_value("site_subtitle")
                 .await

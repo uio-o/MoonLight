@@ -1118,7 +1118,7 @@ async fn download_update_bytes(
         idle_timeout,
         client
             .get(url)
-            .header(reqwest::header::USER_AGENT, "Aether-Gateway update")
+            .header(reqwest::header::USER_AGENT, "MoonLight-Gateway update")
             .send(),
     )
     .await

@@ -71,7 +71,7 @@ async fn admin_oauth_endpoint_reachable(
             .header(reqwest::header::ACCEPT, "*/*")
             .header(
                 reqwest::header::USER_AGENT,
-                "Aether OAuth configuration tester",
+                "MoonLight OAuth configuration tester",
             )
             .send()
             .await

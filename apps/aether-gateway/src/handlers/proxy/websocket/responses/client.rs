@@ -208,7 +208,7 @@ pub(super) async fn forward_client_message(
                             "response.create.stream_id must be 1-256 ASCII letters, numbers, underscores, hyphens, or periods"
                         }
                         "responses_websocket_named_stream_unsupported" => {
-                            "Aether currently supports only the implicit default WebSocket lane; omit response.create.stream_id"
+                            "MoonLight currently supports only the implicit default WebSocket lane; omit response.create.stream_id"
                         }
                         _ => "WebSocket client text events must be response.create JSON objects",
                     };

@@ -335,7 +335,7 @@ async fn fetch_github_releases_with_client(
 ) -> Result<Vec<GitHubRelease>, GitHubReleaseFetchError> {
     let mut request = client
         .get(AETHER_RELEASES_API_URL)
-        .header(reqwest::header::USER_AGENT, "Aether-Gateway update-check")
+        .header(reqwest::header::USER_AGENT, "MoonLight-Gateway update-check")
         .header(reqwest::header::ACCEPT, "application/vnd.github+json");
     if let Some(token) = github_token {
         request = request.bearer_auth(token);
