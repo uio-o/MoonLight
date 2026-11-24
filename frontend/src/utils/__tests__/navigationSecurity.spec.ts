@@ -44,8 +44,8 @@ describe('safeInternalNavigationPath', () => {
 
 describe('safeExternalHttpsUrl', () => {
   it('allows HTTPS links without credentials', () => {
-    expect(safeExternalHttpsUrl(' HTTPS://github.com/fawney19/Aether/releases ')).toBe(
-      'https://github.com/fawney19/Aether/releases',
+    expect(safeExternalHttpsUrl(' HTTPS://github.com/uio-o/MoonLight/releases ')).toBe(
+      'https://github.com/uio-o/MoonLight/releases',
     )
   })
 
@@ -63,7 +63,7 @@ describe('safeExternalHttpsUrl', () => {
   it.each([
     'javascript:alert(1)',
     'data:text/html,attack',
-    'http://github.com/fawney19/Aether/releases',
+    'http://github.com/uio-o/MoonLight/releases',
     '//attacker.example/release',
     'https://user:secret@example.com/release',
     'https:\\attacker.example/release',
