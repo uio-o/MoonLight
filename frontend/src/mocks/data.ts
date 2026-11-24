@@ -1212,7 +1212,7 @@ const MOCK_MODULE_DEFINITIONS: Array<Omit<ModuleStatus, 'active' | 'health'> & {
   {
     name: 'proxy_nodes',
     display_name: '代理节点',
-    description: '添加Http/Socket代理节点, 或使用Aether-Proxy自动连接代理节点.',
+    description: '添加Http/Socket代理节点, 或使用MoonLight-Proxy自动连接代理节点.',
     category: 'integration',
     available: true,
     enabled: true,

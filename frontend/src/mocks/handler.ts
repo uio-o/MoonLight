@@ -1467,7 +1467,7 @@ const mockHandlers: Record<string, (config: AxiosRequestConfig) => Promise<Axios
       : 'https://demo.aether.local'
     return createMockResponse({
       base_url: baseUrl,
-      site_name: 'Aether Demo',
+      site_name: 'MoonLight Demo',
     })
   },
 
@@ -4383,7 +4383,7 @@ registerDynamicRoute('GET', '/api/admin/usage/:requestId', async (config, params
       'Content-Type': 'application/json',
       'Authorization': 'Bearer sk-aether-***',
       'X-Api-Key': 'sk-***',
-      'User-Agent': 'Aether-Client/1.0',
+      'User-Agent': 'MoonLight-Client/1.0',
       'Accept': 'application/json',
       'X-Request-ID': `req_${record.id}`
     },

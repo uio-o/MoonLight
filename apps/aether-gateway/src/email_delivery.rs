@@ -127,7 +127,7 @@ pub(crate) async fn read_smtp_delivery_config(
             smtp_from_name.as_ref(),
             SMTP_MAX_HEADER_VALUE_BYTES,
         )?
-        .unwrap_or_else(|| "Aether".to_string()),
+        .unwrap_or_else(|| "MoonLight".to_string()),
     }))
 }
 

@@ -475,7 +475,7 @@ impl<'a> AdminAppState<'a> {
             "kiro_device_register",
             format!("https://oidc.{region}.amazonaws.com/client/register"),
             json!({
-                "clientName": "Aether Gateway",
+                "clientName": "MoonLight Gateway",
                 "clientType": "public",
                 "scopes": [
                     "codewhisperer:completions",

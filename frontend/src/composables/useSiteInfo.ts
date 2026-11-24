@@ -7,7 +7,7 @@ interface SiteInfo {
 }
 
 const DEFAULT_SITE_INFO: SiteInfo = {
-  site_name: 'Aether',
+  site_name: 'MoonLight',
   site_subtitle: 'AI Gateway',
 }
 

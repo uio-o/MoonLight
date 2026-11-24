@@ -24,7 +24,7 @@ const copiedStep = ref<string | null>(null)
 const productionSteps = [
   {
     get title() { return t('ui.cloneRepository') },
-    code: 'git clone https://github.com/fawney19/Aether.git\ncd Aether',
+    code: 'git clone https://github.com/fawney19/Aether.git\ncd MoonLight',
     icon: Code
   },
   {
@@ -397,7 +397,7 @@ async function copyStep(stepId: string, code: string) {
 
       <div class="space-y-6 mt-6">
         <div>
-          <h3>1. Aether-Proxy</h3>
+          <h3>1. MoonLight-Proxy</h3>
           <p>{{ t('ui.implementedInRustWithVeryLowResourceUsageSuitableFor') }}</p>
           <a
             href="https://github.com/fawney19/Aether/tree/main/aether-tunnel"

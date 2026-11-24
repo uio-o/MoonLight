@@ -982,7 +982,7 @@ const ccSwitchPlainApiKey = ref('')
 const ccSwitchTargetApp = ref<CcSwitchTargetApp>('claude')
 const ccSwitchProviderName = ref('')
 const ccSwitchProviderNameDirty = ref(false)
-const ccSwitchSiteName = ref('Aether')
+const ccSwitchSiteName = ref('MoonLight')
 const ccSwitchModelIds = reactive<Record<CcSwitchModelFieldKey, string>>({
   default: '',
   haiku: '',
@@ -1027,7 +1027,7 @@ const ccSwitchModelFields = computed<CcSwitchModelField[]>(() => {
 const ccSwitchModelHelpText = computed(() =>
   ccSwitchTargetApp.value === 'claude'
     ? 'Claude Code 会分别写入 Haiku、Sonnet、Opus，Sonnet 同时作为默认模型；模型多时可在下拉中搜索并滚动选择。'
-    : '从 Aether 可用模型中选择，模型多时可在下拉中搜索并滚动选择。',
+    : '从 MoonLight 可用模型中选择，模型多时可在下拉中搜索并滚动选择。',
 )
 
 onMounted(() => {
@@ -1220,7 +1220,7 @@ async function prepareCcSwitchDialog() {
       meApi.getAvailableModels({ limit: 1000 }),
     ])
     ccSwitchBaseUrl.value = clientConfig.base_url
-    ccSwitchSiteName.value = clientConfig.site_name?.trim() || 'Aether'
+    ccSwitchSiteName.value = clientConfig.site_name?.trim() || 'MoonLight'
     if (!ccSwitchProviderNameDirty.value) {
       ccSwitchProviderName.value = defaultCcSwitchProviderName(ccSwitchSiteName.value)
     }

@@ -2227,7 +2227,7 @@ pub fn is_sensitive_admin_system_config_key(key: &str) -> bool {
 
 pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value> {
     match key {
-        "site_name" => Some(json!("Aether")),
+        "site_name" => Some(json!("MoonLight")),
         "site_subtitle" => Some(json!("AI Gateway")),
         "default_user_initial_gift_usd" => Some(json!(10.0)),
         "password_policy_level" => Some(json!("weak")),
@@ -2300,7 +2300,7 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "smtp_use_tls" => Some(json!(true)),
         "smtp_use_ssl" => Some(json!(false)),
         "smtp_from_email" => Some(serde_json::Value::Null),
-        "smtp_from_name" => Some(json!("Aether")),
+        "smtp_from_name" => Some(json!("MoonLight")),
         "enable_oauth_token_refresh" => Some(json!(true)),
         "module.important_notification.enabled" => Some(json!(false)),
         "module.important_notification.email_enabled" => Some(json!(false)),
