@@ -129,6 +129,7 @@
       :filter-api-format="filterApiFormat"
       :filter-status="filterStatus"
       :filter-client-family="filterClientFamily"
+      :filter-ip="filterIp"
       :available-users="availableUsers"
       :available-models="availableModels"
       :available-providers="availableProviders"
@@ -147,6 +148,7 @@
       @update:filter-api-format="handleFilterApiFormatChange"
       @update:filter-status="handleFilterStatusChange"
       @update:filter-client-family="handleFilterClientFamilyChange"
+      @update:filter-ip="handleFilterIpChange"
       @update:current-page="handlePageChange"
       @update:page-size="handlePageSizeChange"
       @update:auto-refresh="handleAutoRefreshChange"
@@ -264,6 +266,7 @@ const filterProvider = ref('__all__')
 const filterApiFormat = ref('__all__')
 const filterStatus = ref<FilterStatusValue>('__all__')
 const filterClientFamily = ref('__all__')
+const filterIp = ref('')
 const filterProviderId = ref('')
 const filterApiKeyId = ref('')
 const filterRequestId = ref('')
@@ -275,10 +278,11 @@ const filterFormatConversion = ref<boolean | undefined>()
 const filterSlowThreshold = ref<number | undefined>()
 const hasScopedRecordFilters = computed(() => isAdminPage.value && (
   filterSearch.value.trim() !== '' || [filterUser.value, filterModel.value, filterProvider.value, filterApiFormat.value, filterStatus.value, filterClientFamily.value].some(value => value !== '__all__') ||
+  filterIp.value.trim() !== '' ||
   !!filterProviderId.value || !!filterApiKeyId.value || !!filterRequestId.value || !!filterAttribution.value || !!filterEndpointKind.value || !!filterRequestType.value || filterIsStream.value !== undefined || filterFormatConversion.value !== undefined || filterSlowThreshold.value !== undefined || hideUnknownRecords.value
 ))
 function clearRecordFilters() {
-  const fields = ['search', 'user_id', 'model', 'provider', 'api_format', 'status', 'client_family', 'provider_id', 'api_key_id', 'request_id', 'attribution_kind', 'endpoint_kind', 'request_type', 'is_stream', 'has_format_conversion', 'slow_threshold_ms', 'detail_id', 'page']
+  const fields = ['search', 'user_id', 'model', 'provider', 'api_format', 'status', 'client_family', 'client_ip', 'provider_id', 'api_key_id', 'request_id', 'attribution_kind', 'endpoint_kind', 'request_type', 'is_stream', 'has_format_conversion', 'slow_threshold_ms', 'detail_id', 'page']
   hideUnknownRecords.value = false
   void router.replace({ query: { ...route.query, ...Object.fromEntries(fields.map(key => [key, undefined])) } })
 }
@@ -962,6 +966,7 @@ function applyUsageRoute() {
   const status = queryString(query, 'status')
   filterStatus.value = (status === 'success' ? 'completed' : status || '__all__') as FilterStatusValue
   filterClientFamily.value = queryString(query, 'client_family') || '__all__'
+  filterIp.value = queryString(query, 'client_ip')
   filterProviderId.value = queryString(query, 'provider_id')
   filterApiKeyId.value = queryString(query, 'api_key_id')
   filterRequestId.value = queryString(query, 'request_id')
@@ -997,7 +1002,7 @@ watch(() => route.query, async () => {
     await refreshAdminAnalyticsForSelectionChange()
   }
 })
-watch([timeRange, currentPage, pageSize, filterSearch, filterUser, filterModel, filterProvider, filterApiFormat, filterStatus, filterClientFamily], () => { if (routeReady) syncUsageRoute() })
+watch([timeRange, currentPage, pageSize, filterSearch, filterUser, filterModel, filterProvider, filterApiFormat, filterStatus, filterClientFamily, filterIp], () => { if (routeReady) syncUsageRoute() })
 
 // 初始化加载
 onMounted(async () => {
@@ -1089,6 +1094,7 @@ function getCurrentFilters() {
     api_format: filterApiFormat.value !== '__all__' ? filterApiFormat.value : undefined,
     status: filterStatus.value !== '__all__' ? filterStatus.value : undefined,
     client_family: filterClientFamily.value !== '__all__' ? filterClientFamily.value : undefined,
+    client_ip: filterIp.value.trim() || undefined,
     hideUnknownRecords: hideUnknownRecords.value || undefined
   }
 }
@@ -1161,6 +1167,15 @@ async function handleFilterStatusChange(value: string) {
 
 async function handleFilterClientFamilyChange(value: string) {
   filterClientFamily.value = value
+  currentPage.value = 1
+
+  if (isAdminPage.value) {
+    await loadRecords({ page: 1, pageSize: pageSize.value }, getCurrentFilters(), timeRange.value)
+  }
+}
+
+async function handleFilterIpChange(value: string) {
+  filterIp.value = value
   currentPage.value = 1
 
   if (isAdminPage.value) {

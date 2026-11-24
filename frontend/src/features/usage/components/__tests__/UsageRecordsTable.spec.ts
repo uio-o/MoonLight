@@ -94,6 +94,8 @@ vi.mock('lucide-vue-next', async () => {
     Shuffle: Icon,
     Ban: Icon,
     ShieldCheck: Icon,
+    Network: Icon,
+    X: Icon,
     ChevronDown: Icon,
     Check: Icon,
   }
@@ -854,6 +856,51 @@ describe('UsageRecordsTable', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(onUpdateFilterSearch).toHaveBeenCalledTimes(1)
     expect(onUpdateFilterSearch).toHaveBeenCalledWith('abc')
+  })
+
+  it('debounces IP filter updates', async () => {
+    vi.useFakeTimers()
+    const onUpdateFilterIp = vi.fn()
+    const root = mountUsageRecordsTable([buildRecord()], {
+      'onUpdate:filterIp': onUpdateFilterIp,
+    })
+    const input = root.querySelector<HTMLInputElement>('#usage-records-ip-filter')
+    expect(input).not.toBeNull()
+
+    input!.value = '121.56.'
+    input!.dispatchEvent(new Event('input'))
+    input!.value = '121.56.0.0/16'
+    input!.dispatchEvent(new Event('input'))
+    await nextTick()
+
+    await vi.advanceTimersByTimeAsync(299)
+    expect(onUpdateFilterIp).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(onUpdateFilterIp).toHaveBeenCalledTimes(1)
+    expect(onUpdateFilterIp).toHaveBeenCalledWith('121.56.0.0/16')
+  })
+
+  it('hides the IP filter from non-admin views', () => {
+    const root = mountUsageRecordsTable([buildRecord()], { isAdmin: false })
+
+    expect(root.querySelector('#usage-records-ip-filter')).toBeNull()
+  })
+
+  it('clears the IP filter from the inline clear button', async () => {
+    const onUpdateFilterIp = vi.fn()
+    const root = mountUsageRecordsTable([buildRecord()], {
+      filterIp: '121.56.0.0/16',
+      'onUpdate:filterIp': onUpdateFilterIp,
+    })
+    const clear = root.querySelector<HTMLButtonElement>('button[aria-label="清除 IP 筛选"]')
+    expect(clear).not.toBeNull()
+
+    clear!.click()
+    await nextTick()
+
+    expect(onUpdateFilterIp).toHaveBeenCalledTimes(1)
+    expect(onUpdateFilterIp).toHaveBeenCalledWith('')
   })
 
   it('shows retry and fallback markers together when both flags are set', () => {

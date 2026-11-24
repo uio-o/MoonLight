@@ -53,6 +53,7 @@ export interface FilterParams {
   api_format?: string
   status?: string
   client_family?: string
+  client_ip?: string
   hideUnknownRecords?: boolean
 }
 
@@ -426,6 +427,9 @@ export function useUsageData(options: UseUsageDataOptions) {
         }
         if (filters?.client_family) {
           params.client_family = filters.client_family
+        }
+        if (filters?.client_ip?.trim()) {
+          params.client_ip = filters.client_ip.trim()
         }
         if (filters?.hideUnknownRecords) {
           params.hide_unknown = true

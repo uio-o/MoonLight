@@ -1,6 +1,7 @@
 use aether_data_contracts::repository::usage::{
-    canonical_usage_body_ref_for, parse_usage_body_ref, read_decompressed_usage_json,
-    usage_body_ref, ApiKeyLastUsedDelta, ManagementTokenCounterDelta, ProxyNodeCounterDelta,
+    canonical_usage_body_ref_for, classify_client_ip_filter, parse_usage_body_ref,
+    read_decompressed_usage_json, usage_body_ref, ApiKeyLastUsedDelta,
+    ManagementTokenCounterDelta, ProxyNodeCounterDelta, ClientIpFilterKind,
     StoredUsageAuditAggregation, StoredUsageAuditSummary, StoredUsageBodyPayload,
     StoredUsageBreakdownSummaryRow, StoredUsageCacheAffinityHitSummary,
     StoredUsageCacheAffinityIntervalRow, StoredUsageCacheHitSummary, StoredUsageCostSavingsSummary,
@@ -1872,6 +1873,42 @@ fn push_postgres_usage_client_family_filter(
         .push_bind(client_family.to_ascii_lowercase());
 }
 
+/// Appends the `client_ip` predicate to a usage audit list/count query.
+fn push_postgres_usage_client_ip_filter(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    has_where: &mut bool,
+    client_ip: Option<&str>,
+) {
+    let Some(client_ip) = client_ip
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+
+    push_postgres_usage_where(builder, has_where);
+    match classify_client_ip_filter(client_ip) {
+        ClientIpFilterKind::Exact(addr) => {
+            builder
+                .push("NULLIF(BTRIM(\"usage\".request_metadata->>'client_ip'), '') = ")
+                .push_bind(addr);
+        }
+        ClientIpFilterKind::Network(network) => {
+            // `client_ip` is free-form text, so a malformed row must degrade to
+            // NULL rather than abort the query. `aether_safe_inet` (added by
+            // migration) does the guarded cast; a regex would still let values
+            // such as `121.56.27.4:80` through and blow up on the cast.
+            let predicate = "public.aether_safe_inet(\"usage\".request_metadata->>'client_ip') <<= ";
+            builder.push(predicate).push_bind(network).push("::inet");
+        }
+        ClientIpFilterKind::Prefix(prefix) => {
+            builder
+                .push("NULLIF(BTRIM(\"usage\".request_metadata->>'client_ip'), '') LIKE ")
+                .push_bind(format!("{prefix}%"));
+        }
+    }
+}
+
 fn push_postgres_usage_websocket_filter(
     builder: &mut QueryBuilder<'_, Postgres>,
     has_where: &mut bool,
@@ -3352,6 +3389,11 @@ ORDER BY request_count DESC, "usage".provider_name ASC
             &mut has_where,
             query.client_family.as_deref(),
         );
+        push_postgres_usage_client_ip_filter(
+            &mut builder,
+            &mut has_where,
+            query.client_ip.as_deref(),
+        );
         push_postgres_usage_exclude_unknown_filter(
             &mut builder,
             &mut has_where,
@@ -3479,6 +3521,11 @@ OR (\"usage\".error_message IS NOT NULL AND BTRIM(\"usage\".error_message) <> ''
             &mut builder,
             &mut has_where,
             query.client_family.as_deref(),
+        );
+        push_postgres_usage_client_ip_filter(
+            &mut builder,
+            &mut has_where,
+            query.client_ip.as_deref(),
         );
         push_postgres_usage_exclude_unknown_filter(
             &mut builder,
@@ -3689,6 +3736,11 @@ OR (\"usage\".error_message IS NOT NULL AND BTRIM(\"usage\".error_message) <> ''
             &mut has_where,
             query.client_family.as_deref(),
         );
+        push_postgres_usage_client_ip_filter(
+            &mut builder,
+            &mut has_where,
+            query.client_ip.as_deref(),
+        );
         push_postgres_usage_exclude_unknown_filter(
             &mut builder,
             &mut has_where,
@@ -3805,6 +3857,11 @@ OR (\"usage\".error_message IS NOT NULL AND BTRIM(\"usage\".error_message) <> ''
             &mut builder,
             &mut has_where,
             query.client_family.as_deref(),
+        );
+        push_postgres_usage_client_ip_filter(
+            &mut builder,
+            &mut has_where,
+            query.client_ip.as_deref(),
         );
         push_postgres_usage_exclude_unknown_filter(
             &mut builder,

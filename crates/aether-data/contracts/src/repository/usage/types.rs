@@ -1255,6 +1255,76 @@ pub struct StoredProviderApiKeyWindowUsageSummary {
     pub total_cost_usd: f64,
 }
 
+/// How a caller-supplied `client_ip` filter should be matched against the
+/// `client_ip` recorded in each usage row's `request_metadata`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientIpFilterKind {
+    /// Exact address match (`121.56.27.4`).
+    Exact(String),
+    /// CIDR containment (`121.56.0.0/16`).
+    Network(String),
+    /// Textual prefix match (`121.56.`), for callers narrowing down an unknown range.
+    Prefix(String),
+}
+
+fn invalid_client_ip_filter(value: &str) -> String {
+    format!("invalid client_ip: {value}")
+}
+
+fn parse_client_ip_network(value: &str) -> Option<String> {
+    let (addr, prefix) = value.split_once('/')?;
+    let addr = addr.trim().parse::<std::net::IpAddr>().ok()?;
+    let prefix = prefix.trim().parse::<u8>().ok()?;
+    let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
+    (prefix <= max_prefix).then(|| format!("{addr}/{prefix}"))
+}
+
+/// Only address characters may appear in a bare prefix filter, so a stray `%`
+/// or `_` can never reach a downstream SQL `LIKE` pattern as a wildcard.
+fn is_client_ip_prefix_char(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, '.' | ':' | 'a'..='f' | 'A'..='F')
+}
+
+/// Normalizes a caller-supplied `client_ip` filter into its canonical form.
+///
+/// Returns `None` for an empty/whitespace-only value so callers can treat the
+/// filter as absent. Rejects anything that is neither a parseable address, a
+/// valid CIDR block, nor a bare address prefix, so a typo fails loudly instead
+/// of silently widening the result set.
+pub fn normalize_client_ip_filter(raw: &str) -> Result<Option<String>, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.contains('/') {
+        return parse_client_ip_network(value)
+            .map(Some)
+            .ok_or_else(|| invalid_client_ip_filter(value));
+    }
+    if value.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(Some(value.to_string()));
+    }
+    // A bare prefix may only contain address characters, so a stray `%` or `_`
+    // can never leak into a downstream SQL `LIKE` pattern as a wildcard.
+    if !value.chars().all(is_client_ip_prefix_char) {
+        return Err(invalid_client_ip_filter(value));
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// Classifies an already-normalized `client_ip` filter. Falls back to a textual
+/// prefix match when the value is neither an address nor a valid CIDR block.
+pub fn classify_client_ip_filter(value: &str) -> ClientIpFilterKind {
+    if value.contains('/') {
+        if let Some(network) = parse_client_ip_network(value) {
+            return ClientIpFilterKind::Network(network);
+        }
+    } else if let Ok(addr) = value.parse::<std::net::IpAddr>() {
+        return ClientIpFilterKind::Exact(addr.to_string());
+    }
+    ClientIpFilterKind::Prefix(value.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct UsageAuditListQuery {
     #[serde(default)]
@@ -1282,6 +1352,7 @@ pub struct UsageAuditListQuery {
     pub model: Option<String>,
     pub api_format: Option<String>,
     pub client_family: Option<String>,
+    pub client_ip: Option<String>,
     pub exclude_unknown_model_or_provider: bool,
     pub statuses: Option<Vec<String>>,
     pub exclude_status_codes: Vec<u16>,
@@ -1320,6 +1391,7 @@ pub struct UsageAuditKeywordSearchQuery {
     pub model: Option<String>,
     pub api_format: Option<String>,
     pub client_family: Option<String>,
+    pub client_ip: Option<String>,
     pub exclude_unknown_model_or_provider: bool,
     pub statuses: Option<Vec<String>>,
     pub exclude_status_codes: Vec<u16>,
@@ -4257,5 +4329,95 @@ mod tests {
         usage.request_body = None;
         assert_eq!(usage.preferred_request_body_source_field(), None);
         assert_eq!(usage.curl_body_source(), "unavailable");
+    }
+}
+
+#[cfg(test)]
+mod client_ip_filter_tests {
+    use super::{classify_client_ip_filter, normalize_client_ip_filter, ClientIpFilterKind};
+
+    #[test]
+    fn empty_and_whitespace_normalize_to_absent() {
+        assert_eq!(normalize_client_ip_filter(""), Ok(None));
+        assert_eq!(normalize_client_ip_filter("   \t"), Ok(None));
+    }
+
+    #[test]
+    fn exact_addresses_pass_through_trimmed() {
+        assert_eq!(
+            normalize_client_ip_filter(" 121.56.27.4 "),
+            Ok(Some("121.56.27.4".to_string()))
+        );
+        assert_eq!(
+            normalize_client_ip_filter("2001:db8::1"),
+            Ok(Some("2001:db8::1".to_string()))
+        );
+    }
+
+    #[test]
+    fn cidr_blocks_are_canonicalized_and_bounded() {
+        assert_eq!(
+            normalize_client_ip_filter("121.56.0.0/16"),
+            Ok(Some("121.56.0.0/16".to_string()))
+        );
+        assert_eq!(
+            normalize_client_ip_filter(" 10.0.0.0/8 "),
+            Ok(Some("10.0.0.0/8".to_string()))
+        );
+        assert_eq!(
+            normalize_client_ip_filter("2001:db8::/32"),
+            Ok(Some("2001:db8::/32".to_string()))
+        );
+    }
+
+    #[test]
+    fn invalid_filters_are_rejected_loudly() {
+        // Prefix beyond the address family's width.
+        assert!(normalize_client_ip_filter("10.0.0.0/33").is_err());
+        assert!(normalize_client_ip_filter("2001:db8::/129").is_err());
+        // Non-numeric or empty prefix.
+        assert!(normalize_client_ip_filter("10.0.0.0/").is_err());
+        assert!(normalize_client_ip_filter("10.0.0.0/eight").is_err());
+        // Address part that does not parse.
+        assert!(normalize_client_ip_filter("not-an-ip/24").is_err());
+        // Wildcards and other stray characters must never reach a LIKE pattern.
+        assert!(normalize_client_ip_filter("121.%").is_err());
+        assert!(normalize_client_ip_filter("121.5_4").is_err());
+        assert!(normalize_client_ip_filter("121.56.27.4 extra").is_err());
+        assert!(normalize_client_ip_filter("a b").is_err());
+    }
+
+    #[test]
+    fn bare_address_prefixes_are_accepted() {
+        assert_eq!(
+            normalize_client_ip_filter("121.56."),
+            Ok(Some("121.56.".to_string()))
+        );
+        assert_eq!(
+            normalize_client_ip_filter("2001:db8"),
+            Ok(Some("2001:db8".to_string()))
+        );
+    }
+
+    #[test]
+    fn classification_drives_the_right_match_strategy() {
+        assert_eq!(
+            classify_client_ip_filter("121.56.27.4"),
+            ClientIpFilterKind::Exact("121.56.27.4".to_string())
+        );
+        assert_eq!(
+            classify_client_ip_filter("121.56.0.0/16"),
+            ClientIpFilterKind::Network("121.56.0.0/16".to_string())
+        );
+        assert_eq!(
+            classify_client_ip_filter("121.56."),
+            ClientIpFilterKind::Prefix("121.56.".to_string())
+        );
+        // An out-of-range prefix degrades to a textual prefix rather than a
+        // broken network predicate.
+        assert_eq!(
+            classify_client_ip_filter("10.0.0.0/33"),
+            ClientIpFilterKind::Prefix("10.0.0.0/33".to_string())
+        );
     }
 }

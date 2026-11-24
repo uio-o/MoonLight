@@ -25,13 +25,16 @@ pub use health::*;
 pub use metadata_policy::*;
 pub use policy::*;
 pub use types::{
-    canonical_usage_body_ref_for, extract_provider_actual_service_tier_from_response,
+    canonical_usage_body_ref_for, classify_client_ip_filter,
+    extract_provider_actual_service_tier_from_response,
     extract_provider_cache_ttl_minutes_from_metadata, extract_provider_reasoning_effort_from_body,
     extract_provider_response_model_from_bodies, extract_provider_service_tier_from_body,
-    normalize_provider_response_model, normalize_provider_service_tier, parse_usage_body_ref,
+    normalize_client_ip_filter, normalize_provider_response_model,
+    normalize_provider_service_tier, parse_usage_body_ref,
     resolve_provider_cache_ttl_minutes, resolve_provider_service_tier_from_request_capture,
     usage_body_capture_is_authoritative, usage_body_ref, usage_request_metadata_client_family,
-    ApiKeyLastUsedDelta, ManagementTokenCounterDelta, PendingUsageCleanupSummary,
+    ApiKeyLastUsedDelta, ClientIpFilterKind, ManagementTokenCounterDelta,
+    PendingUsageCleanupSummary,
     ProviderApiKeyWindowUsageRequest, ProxyNodeCounterDelta, StoredProviderApiKeyUsageSummary,
     StoredProviderApiKeyWindowUsageSummary, StoredProviderUsageSummary, StoredProviderUsageWindow,
     StoredRequestUsageAudit, StoredUsageAuditAggregation, StoredUsageAuditSummary,

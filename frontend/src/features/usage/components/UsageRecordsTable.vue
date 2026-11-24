@@ -27,6 +27,37 @@
         </div>
       </div>
 
+      <!-- IP 地址/网段筛选（仅管理员：用户侧接口不接收该参数） -->
+      <div
+        v-if="isAdmin"
+        class="order-2 flex w-full items-center gap-2 md:order-none md:w-auto"
+      >
+        <div class="relative min-w-0 flex-1 md:w-60 md:flex-none">
+          <Network class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
+          <Input
+            id="usage-records-ip-filter"
+            v-model="localIpFilter"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            :placeholder="t('ui.ipFilterPlaceholder')"
+            :title="t('ui.ipFilterHint')"
+            class="h-8 w-full text-xs border-border/60 pl-8 pr-7"
+            :class="hasIpFilter ? 'border-primary/60' : ''"
+          />
+          <button
+            v-if="hasIpFilter"
+            type="button"
+            class="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            :title="t('ui.clearIpFilter')"
+            :aria-label="t('ui.clearIpFilter')"
+            @click="clearIpFilter"
+          >
+            <X class="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+
       <Button
         variant="ghost"
         size="icon"
@@ -881,7 +912,7 @@ import {
   SortableTableHead,
   TableFilterMenu,
 } from '@/components/ui'
-import { Ban, EyeOff, RefreshCcw, Search, ShieldCheck, Shuffle } from 'lucide-vue-next'
+import { Ban, EyeOff, Network, RefreshCcw, Search, ShieldCheck, Shuffle, X } from 'lucide-vue-next'
 import { formatTokens } from '@/utils/format'
 import {
   formatOutputRate,
@@ -978,6 +1009,7 @@ const props = defineProps<{
   filterApiFormat: string
   filterStatus: string
   filterClientFamily: string
+  filterIp: string
   availableUsers: UserOption[]
   availableModels: string[]
   availableProviders: string[]
@@ -1001,6 +1033,7 @@ const emit = defineEmits<{
   'update:filterApiFormat': [value: string]
   'update:filterStatus': [value: string]
   'update:filterClientFamily': [value: string]
+  'update:filterIp': [value: string]
   'update:currentPage': [value: number]
   'update:pageSize': [value: number]
   'update:autoRefresh': [value: boolean]
@@ -1222,7 +1255,50 @@ watch(localSearch, (value) => {
 
 onBeforeUnmount(() => {
   cancelPendingSearchEmit()
+  cancelPendingIpEmit()
 })
+
+// IP 地址/网段筛选（与通用搜索共用同一防抖节奏，避免每敲一个字符就重查）
+const localIpFilter = ref(props.filterIp ?? '')
+const hasIpFilter = computed(() => Boolean(props.filterIp?.trim()))
+let ipEmitTimer: ReturnType<typeof setTimeout> | null = null
+
+function cancelPendingIpEmit() {
+  if (ipEmitTimer !== null) {
+    clearTimeout(ipEmitTimer)
+    ipEmitTimer = null
+  }
+}
+
+function scheduleIpEmit(value: string) {
+  cancelPendingIpEmit()
+  ipEmitTimer = setTimeout(() => {
+    ipEmitTimer = null
+    if (value !== props.filterIp) {
+      emit('update:filterIp', value)
+    }
+  }, SEARCH_EMIT_DEBOUNCE_MS)
+}
+
+watch(() => props.filterIp, (value) => {
+  if (value !== localIpFilter.value) {
+    cancelPendingIpEmit()
+    localIpFilter.value = value
+  }
+})
+
+watch(localIpFilter, (value) => {
+  if (value === props.filterIp) return
+  scheduleIpEmit(value)
+})
+
+function clearIpFilter() {
+  cancelPendingIpEmit()
+  localIpFilter.value = ''
+  if (props.filterIp !== '') {
+    emit('update:filterIp', '')
+  }
+}
 
 // 使用复用的行点击逻辑
 const { handleMouseDown, shouldTriggerRowClick } = useRowClick()

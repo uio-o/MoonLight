@@ -3787,6 +3787,9 @@ fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
     assert!(source.contains("push_postgres_usage_client_family_filter"));
     assert!(source.contains("request_metadata->'client_session_affinity'->>'client_family'"));
     assert!(source.contains("request_metadata->>'client_family'"));
+    assert!(source.contains("push_postgres_usage_client_ip_filter"));
+    assert!(source.contains("request_metadata->>'client_ip'"));
+    assert!(source.contains("public.aether_safe_inet(\"usage\".request_metadata->>'client_ip')"));
     assert!(source.contains("exclude_unknown_model_or_provider"));
     assert!(source.contains("NOT IN ('unknown', 'unknow')"));
     assert_eq!(
@@ -3795,6 +3798,13 @@ fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
             .count(),
         5,
         "the WebSocket filter must cover list/count and keyword list/count"
+    );
+    assert_eq!(
+        source
+            .matches("push_postgres_usage_client_ip_filter(")
+            .count(),
+        5,
+        "the client_ip filter must cover list/count and keyword list/count"
     );
 }
 

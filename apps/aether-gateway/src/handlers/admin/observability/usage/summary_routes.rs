@@ -19,8 +19,8 @@ use aether_data_contracts::repository::{
         sanitize_request_candidate_extra_data, RequestCandidateStatus, StoredRequestCandidate,
     },
     usage::{
-        StoredRequestUsageAudit, UsageAuditKeywordSearchQuery, UsageAuditListQuery,
-        UsageAuditSummaryQuery,
+        normalize_client_ip_filter, StoredRequestUsageAudit, UsageAuditKeywordSearchQuery,
+        UsageAuditListQuery, UsageAuditSummaryQuery,
     },
 };
 use axum::{
@@ -588,6 +588,8 @@ fn build_admin_usage_records_query(
                 .ok_or_else(|| "slow_threshold_ms must be between 1 and 86400000".to_string())
         })
         .transpose()?;
+    let client_ip_filter = query_param_value(query, "client_ip").unwrap_or_default();
+    let client_ip = normalize_client_ip_filter(&client_ip_filter)?;
     let mut list_query = UsageAuditListQuery {
         created_from_unix_secs: Some(created_from_unix_secs),
         created_until_unix_secs: Some(created_until_unix_secs),
@@ -605,6 +607,7 @@ fn build_admin_usage_records_query(
         is_stream: boolean("is_stream")?,
         model: query_param_value(query, "model"),
         api_format: query_param_value(query, "api_format"),
+        client_ip,
         limit,
         offset,
         newest_first: true,
@@ -751,6 +754,7 @@ fn build_admin_usage_keyword_search_query(
         model: base_query.model.clone(),
         api_format: base_query.api_format.clone(),
         client_family: base_query.client_family.clone(),
+        client_ip: base_query.client_ip.clone(),
         exclude_unknown_model_or_provider: base_query.exclude_unknown_model_or_provider,
         statuses: base_query.statuses.clone(),
         exclude_status_codes: base_query.exclude_status_codes.clone(),
