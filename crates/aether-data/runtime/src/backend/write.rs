@@ -147,8 +147,9 @@ impl DataWriteRepositories {
             self.usage = Some(PostgresBackend::usage_write_repository(backend));
         }
         if self.user_telegram_bindings.is_none() {
-            self.user_telegram_bindings =
-                Some(PostgresBackend::user_telegram_binding_write_repository(backend));
+            self.user_telegram_bindings = Some(
+                PostgresBackend::user_telegram_binding_write_repository(backend),
+            );
         }
         if self.video_tasks.is_none() {
             self.video_tasks = Some(PostgresBackend::video_task_write_repository(backend));

@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use futures_util::TryStreamExt;
 use sqlx::{postgres::PgRow, PgPool, Row};
 
 use aether_data_contracts::repository::user_telegram_bindings::{
@@ -196,10 +195,7 @@ impl SqlxUserTelegramBindingRepository {
             chat_title: row.try_get("chat_title").map_postgres_err()?,
             username: row.try_get("username").map_postgres_err()?,
             link_code: row.try_get("link_code").map_postgres_err()?,
-            link_code_expires_at_unix_secs: non_negative(
-                row,
-                "link_code_expires_at_unix_secs",
-            )?,
+            link_code_expires_at_unix_secs: non_negative(row, "link_code_expires_at_unix_secs")?,
             verified_at_unix_secs: optional_unix_secs(row, "verified_at_unix_secs")?,
             last_notified_at_unix_secs: optional_unix_secs(row, "last_notified_at_unix_secs")?,
             notification_count: non_negative(row, "notification_count")?,
@@ -218,7 +214,9 @@ fn non_negative(row: &PgRow, column: &str) -> Result<u64, DataLayerError> {
 
 fn optional_unix_secs(row: &PgRow, column: &str) -> Result<Option<u64>, DataLayerError> {
     let value = row.try_get::<Option<i64>, _>(column).map_postgres_err()?;
-    value.map(|value| non_negative_value(value, column)).transpose()
+    value
+        .map(|value| non_negative_value(value, column))
+        .transpose()
 }
 
 fn non_negative_value(value: i64, column: &str) -> Result<u64, DataLayerError> {
@@ -341,9 +339,9 @@ impl UserTelegramBindingWriteRepository for SqlxUserTelegramBindingRepository {
 #[cfg(test)]
 mod tests {
     use super::{
-        CREATE_USER_TELEGRAM_BINDING_SQL, RECORD_USER_TELEGRAM_NOTIFICATION_SQL,
+        SqlxUserTelegramBindingRepository, CREATE_USER_TELEGRAM_BINDING_SQL,
+        RECORD_USER_TELEGRAM_NOTIFICATION_SQL,
         SELECT_USER_TELEGRAM_BINDING_BY_ACTIVE_LINK_CODE_SQL, VERIFY_USER_TELEGRAM_BINDING_SQL,
-        SqlxUserTelegramBindingRepository,
     };
     use crate::{PostgresPoolConfig, PostgresPoolFactory};
 
@@ -368,7 +366,13 @@ mod tests {
     #[test]
     fn rebinding_clears_the_previous_chat_instead_of_stacking_a_second_one() {
         assert!(CREATE_USER_TELEGRAM_BINDING_SQL.contains("ON CONFLICT (user_id) DO UPDATE SET"));
-        for column in ["chat_id", "chat_type", "chat_title", "username", "verified_at"] {
+        for column in [
+            "chat_id",
+            "chat_type",
+            "chat_title",
+            "username",
+            "verified_at",
+        ] {
             assert!(
                 CREATE_USER_TELEGRAM_BINDING_SQL.contains(&format!("{column} = NULL,")),
                 "re-binding must reset {column}"
@@ -389,9 +393,8 @@ mod tests {
 
     #[test]
     fn active_link_code_lookup_rejects_verified_and_expired_rows() {
-        assert!(
-            SELECT_USER_TELEGRAM_BINDING_BY_ACTIVE_LINK_CODE_SQL.contains("AND verified_at IS NULL")
-        );
+        assert!(SELECT_USER_TELEGRAM_BINDING_BY_ACTIVE_LINK_CODE_SQL
+            .contains("AND verified_at IS NULL"));
         assert!(SELECT_USER_TELEGRAM_BINDING_BY_ACTIVE_LINK_CODE_SQL
             .contains("AND link_code_expires_at > TO_TIMESTAMP($2::double precision)"));
     }

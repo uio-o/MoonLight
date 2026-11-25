@@ -83,7 +83,10 @@ impl UserTelegramBindingWriteRepository for InMemoryUserTelegramBindingRepositor
             created_at_unix_secs: record.link_code_expires_at_unix_secs,
             updated_at_unix_secs: record.link_code_expires_at_unix_secs,
         };
-        let mut items = self.items.write().expect("telegram binding repository lock");
+        let mut items = self
+            .items
+            .write()
+            .expect("telegram binding repository lock");
         items.retain(|item| item.user_id != stored.user_id);
         items.push(stored.clone());
         Ok(stored)
@@ -94,7 +97,10 @@ impl UserTelegramBindingWriteRepository for InMemoryUserTelegramBindingRepositor
         record: VerifyUserTelegramBindingRecord,
     ) -> Result<Option<StoredUserTelegramBinding>, DataLayerError> {
         record.validate()?;
-        let mut items = self.items.write().expect("telegram binding repository lock");
+        let mut items = self
+            .items
+            .write()
+            .expect("telegram binding repository lock");
         let Some(index) = items.iter().position(|item| {
             item.link_code == record.link_code
                 && item.link_code_expires_at_unix_secs > record.verified_at_unix_secs
@@ -117,7 +123,10 @@ impl UserTelegramBindingWriteRepository for InMemoryUserTelegramBindingRepositor
         &self,
         user_id: &str,
     ) -> Result<bool, DataLayerError> {
-        let mut items = self.items.write().expect("telegram binding repository lock");
+        let mut items = self
+            .items
+            .write()
+            .expect("telegram binding repository lock");
         let before = items.len();
         items.retain(|item| item.user_id != user_id);
         Ok(items.len() != before)
@@ -128,7 +137,10 @@ impl UserTelegramBindingWriteRepository for InMemoryUserTelegramBindingRepositor
         user_id: &str,
         now_unix_secs: u64,
     ) -> Result<Option<StoredUserTelegramBinding>, DataLayerError> {
-        let mut items = self.items.write().expect("telegram binding repository lock");
+        let mut items = self
+            .items
+            .write()
+            .expect("telegram binding repository lock");
         let Some(item) = items
             .iter_mut()
             .find(|item| item.user_id == user_id && item.is_verified())
@@ -223,20 +235,16 @@ mod tests {
             .await
             .expect("binding");
 
-        assert!(
-            repository
-                .find_user_telegram_binding_by_active_link_code("AAAAAAAAAA", 1_799)
-                .await
-                .expect("lookup")
-                .is_some()
-        );
-        assert!(
-            repository
-                .find_user_telegram_binding_by_active_link_code("AAAAAAAAAA", 1_800)
-                .await
-                .expect("lookup")
-                .is_none()
-        );
+        assert!(repository
+            .find_user_telegram_binding_by_active_link_code("AAAAAAAAAA", 1_799)
+            .await
+            .expect("lookup")
+            .is_some());
+        assert!(repository
+            .find_user_telegram_binding_by_active_link_code("AAAAAAAAAA", 1_800)
+            .await
+            .expect("lookup")
+            .is_none());
     }
 
     #[tokio::test]

@@ -165,8 +165,9 @@ impl DataReadRepositories {
             self.usage = Some(PostgresBackend::usage_read_repository(backend));
         }
         if self.user_telegram_bindings.is_none() {
-            self.user_telegram_bindings =
-                Some(PostgresBackend::user_telegram_binding_read_repository(backend));
+            self.user_telegram_bindings = Some(
+                PostgresBackend::user_telegram_binding_read_repository(backend),
+            );
         }
         if self.users.is_none() {
             self.users = Some(PostgresBackend::user_read_repository(backend));

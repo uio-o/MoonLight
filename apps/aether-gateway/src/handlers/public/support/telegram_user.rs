@@ -194,7 +194,7 @@ async fn handle_binding_create(
         Ok(()) => true,
         Err(err) => {
             warn!(
-                error = %crate::error::redact_error_detail(&err),
+                error = %crate::error::redact_error_debug(&err),
                 "failed to register telegram webhook"
             );
             false
@@ -285,7 +285,7 @@ pub(crate) async fn send_user_telegram_notification(
                 .await
             {
                 warn!(
-                    error = %crate::error::redact_error_detail(&err),
+                    error = %crate::error::redact_error_debug(&err),
                     "failed to record user telegram notification"
                 );
             }
@@ -297,7 +297,7 @@ pub(crate) async fn send_user_telegram_notification(
         }
         Err(err) => {
             warn!(
-                error = %crate::error::redact_error_detail(&err),
+                error = %crate::error::redact_error_debug(&err),
                 user_id = %user_id,
                 "failed to send user telegram notification"
             );
@@ -385,7 +385,7 @@ async fn handle_telegram_webhook(
         // opened the bot by hand knows what to do next.
         let _ = send_telegram_text(&bot_token, &chat_id, TELEGRAM_BIND_INSTRUCTIONS).await;
         return webhook_ack();
-    }
+    };
 
     let now = current_unix_secs();
     match state
@@ -404,7 +404,7 @@ async fn handle_telegram_webhook(
         }
         Err(err) => {
             warn!(
-                error = %crate::error::redact_error_detail(&err),
+                error = %crate::error::redact_error_debug(&err),
                 "failed to look up telegram link code"
             );
             return webhook_ack();
@@ -433,7 +433,7 @@ async fn handle_telegram_webhook(
         }
         Err(err) => {
             warn!(
-                error = %crate::error::redact_error_detail(&err),
+                error = %crate::error::redact_error_debug(&err),
                 "failed to verify telegram binding"
             );
             // The most likely cause is the unique constraint on a chat that is

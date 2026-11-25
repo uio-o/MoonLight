@@ -128,14 +128,16 @@ pub fn validate_user_telegram_link_code(value: &str) -> Result<(), crate::DataLa
 }
 
 /// Telegram chat ids are decimal, optionally negative for groups and channels.
+/// The value is never padded by its callers, so surrounding whitespace is
+/// rejected rather than trimmed away: a stored chat id is interpolated straight
+/// into the Bot API request and must match byte for byte.
 pub fn validate_user_telegram_chat_id(value: &str) -> Result<(), crate::DataLayerError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() || trimmed.len() > MAX_USER_TELEGRAM_CHAT_ID_BYTES {
+    if value.is_empty() || value.len() > MAX_USER_TELEGRAM_CHAT_ID_BYTES {
         return Err(crate::DataLayerError::InvalidInput(
             "Telegram Chat ID 为空或过长".to_string(),
         ));
     }
-    let digits = trimmed.strip_prefix('-').unwrap_or(trimmed);
+    let digits = value.strip_prefix('-').unwrap_or(value);
     if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(crate::DataLayerError::InvalidInput(
             "Telegram Chat ID 必须是十进制数字".to_string(),
