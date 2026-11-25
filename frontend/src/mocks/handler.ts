@@ -2708,6 +2708,7 @@ function generateMockModelsForProvider(providerId: string) {
 const WRITE_ONLY_SYSTEM_CONFIG_KEYS = new Set([
   'module.server_chan_push.send_key',
   'module.bark_push.device_key',
+  'module.telegram_push.bot_token',
   'backup_s3_secret_access_key',
 ])
 

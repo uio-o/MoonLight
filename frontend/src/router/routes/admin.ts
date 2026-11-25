@@ -184,6 +184,16 @@ export const adminRoutes: RouteRecordRaw[] = [
         meta: { module: 'bark_push' }
       },
       {
+        path: 'telegram',
+        redirect: '/admin/modules/telegram'
+      },
+      {
+        path: 'modules/telegram',
+        name: 'TelegramSettings',
+        component: view(() => import('@/views/admin/modules/TelegramSettings.vue')),
+        meta: { module: 'telegram_push' }
+      },
+      {
         path: 'email',
         name: 'EmailSettings',
         component: view(() => import('@/views/admin/EmailSettings.vue'))

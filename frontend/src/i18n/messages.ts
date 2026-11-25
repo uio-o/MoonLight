@@ -501,6 +501,8 @@ export const messages = {
     'breadcrumb.personalSettings': '个人设置',
     'breadcrumb.routingCreate': '新建调度策略',
     'breadcrumb.routingConfig': '调度策略配置',
+    'modules.telegram.chatIdHint': "通知目标的会话 ID。个人会话为正数，群组为 -100 开头的负数；给机器人发一条消息后访问 https://api.telegram.org/bot<token>/getUpdates 可查看。",
+    'modules.telegram.botTokenHint': "在 Telegram 中找 @BotFather，发送 /newbot 创建机器人后获得的凭证，形如 123456789:AAH...。",
   },
   'en-US': {
     ...uiMessages['en-US'],
@@ -999,6 +1001,8 @@ export const messages = {
     'breadcrumb.personalSettings': 'Profile settings',
     'breadcrumb.routingCreate': 'Create routing profile',
     'breadcrumb.routingConfig': 'Routing profile',
+    'modules.telegram.chatIdHint': "Chat ID of the notification target. Personal chats are positive; groups start with -100. Send the bot a message and check https://api.telegram.org/bot<token>/getUpdates.",
+    'modules.telegram.botTokenHint': "Credential from @BotFather on Telegram after sending /newbot, for example 123456789:AAH....",
   },
 } as const
 

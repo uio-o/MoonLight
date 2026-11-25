@@ -41,6 +41,9 @@
                   <SelectItem value="bark">
                     Bark
                   </SelectItem>
+                  <SelectItem value="telegram">
+                    Telegram
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -146,6 +149,31 @@
                 {{ t('ui.configureBark') }}
               </RouterLink>
             </section>
+
+            <section class="space-y-4">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <Label class="text-sm font-medium">
+                      Telegram
+                    </Label>
+                    <Badge :variant="telegramReady ? 'success' : 'outline'">
+                      {{ telegramReady ? t('ui.available4d99c97') : t('ui.notReady') }}
+                    </Badge>
+                  </div>
+                  <p class="mt-1 text-xs text-muted-foreground">
+                    {{ t('ui.sendNotificationsToYourTelegramChatThroughBot') }}
+                  </p>
+                </div>
+              </div>
+
+              <RouterLink
+                to="/admin/modules/telegram"
+                class="inline-flex h-11 items-center rounded-xl border border-border/60 bg-card/60 px-4 text-sm font-semibold text-foreground hover:border-primary/60 hover:bg-primary/10 hover:text-primary"
+              >
+                {{ t('ui.configureTelegram') }}
+              </RouterLink>
+            </section>
           </div>
         </div>
       </CardSection>
@@ -243,6 +271,9 @@
                     <SelectItem value="bark">
                       Bark
                     </SelectItem>
+                    <SelectItem value="telegram">
+                      Telegram
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -333,6 +364,9 @@
               <SelectItem value="bark">
                 Bark
               </SelectItem>
+              <SelectItem value="telegram">
+                Telegram
+              </SelectItem>
             </SelectContent>
           </Select>
           <Button
@@ -393,7 +427,7 @@ import { parseApiError } from '@/utils/errorParser'
 import { log } from '@/utils/logger'
 import { formatNotificationChannel } from './notificationChannel'
 
-type DeliveryChannel = 'global' | 'all' | 'email' | 'server_chan' | 'bark'
+type DeliveryChannel = 'global' | 'all' | 'email' | 'server_chan' | 'bark' | 'telegram'
 
 interface NotificationItem {
   local_id: string
@@ -424,6 +458,7 @@ const CONFIG_KEYS = {
   items: 'module.important_notification.items',
   server_chan_send_key: 'module.server_chan_push.send_key',
   bark_device_key: 'module.bark_push.device_key',
+  telegram_bot_token: 'module.telegram_push.bot_token',
 } as const
 
 const DEFAULT_ITEMS: NotificationItem[] = [
@@ -474,6 +509,9 @@ const serverChanKeyIsSet = ref(false)
 const serverChanStatus = ref<ModuleStatus | null>(null)
 const barkKeyIsSet = ref(false)
 const barkStatus = ref<ModuleStatus | null>(null)
+const telegramKeyIsSet = ref(false)
+const telegramChatIdIsSet = ref(false)
+const telegramStatus = ref<ModuleStatus | null>(null)
 const testItemKey = ref('provider_quota_alert')
 const testChannel = ref<DeliveryChannel>('global')
 const lastTestResult = ref<Array<{ channel: string; success: boolean; message: string }>>([])
@@ -498,6 +536,12 @@ const barkReady = computed(() => {
   return barkStatus.value?.enabled === true && barkKeyIsSet.value
 })
 
+const telegramReady = computed(() => {
+  return telegramStatus.value?.enabled === true
+    && telegramKeyIsSet.value
+    && telegramChatIdIsSet.value
+})
+
 const canEnableService = computed(() => {
   if (deliveryReady(config.value.default_channel)) return true
   return config.value.items.some(item => item.enabled && isItemReady(item))
@@ -516,6 +560,7 @@ async function loadConfig() {
     const moduleStatus = moduleStatuses.important_notification
     const serverChanModuleStatus = moduleStatuses.server_chan_push
     const barkModuleStatus = moduleStatuses.bark_push
+    const telegramModuleStatus = moduleStatuses.telegram_push
     const configsByKey = new Map(configs.map(config => [config.key, config]))
     const emailEnabled = configsByKey.get(CONFIG_KEYS.email_enabled)
     const recipients = configsByKey.get(CONFIG_KEYS.email_recipients)
@@ -523,6 +568,8 @@ async function loadConfig() {
     const items = configsByKey.get(CONFIG_KEYS.items)
     const serverChanKey = configsByKey.get(CONFIG_KEYS.server_chan_send_key)
     const barkDeviceKey = configsByKey.get(CONFIG_KEYS.bark_device_key)
+    const telegramBotToken = configsByKey.get(CONFIG_KEYS.telegram_bot_token)
+    const telegramChatId = configsByKey.get('module.telegram_push.chat_id')
     const smtpHost = configsByKey.get('smtp_host')
     const smtpFromEmail = configsByKey.get('smtp_from_email')
 
@@ -535,6 +582,9 @@ async function loadConfig() {
     serverChanKeyIsSet.value = serverChanKey?.is_set === true
     barkStatus.value = barkModuleStatus
     barkKeyIsSet.value = barkDeviceKey?.is_set === true
+    telegramStatus.value = telegramModuleStatus
+    telegramKeyIsSet.value = telegramBotToken?.is_set === true
+    telegramChatIdIsSet.value = isNonEmptyString(telegramChatId?.value)
     smtpConfigured.value = isNonEmptyString(smtpHost?.value) && isNonEmptyString(smtpFromEmail?.value)
     if (!config.value.items.some(item => item.key === testItemKey.value)) {
       testItemKey.value = config.value.items[0]?.key || ''
@@ -619,10 +669,13 @@ function isItemReady(item: NotificationItem): boolean {
 }
 
 function deliveryReady(channel: Exclude<DeliveryChannel, 'global'>): boolean {
-  if (channel === 'all') return emailReady.value || serverChanReady.value || barkReady.value
+  if (channel === 'all') {
+    return emailReady.value || serverChanReady.value || barkReady.value || telegramReady.value
+  }
   if (channel === 'email') return emailReady.value
   if (channel === 'server_chan') return serverChanReady.value
   if (channel === 'bark') return barkReady.value
+  if (channel === 'telegram') return telegramReady.value
   return false
 }
 
@@ -677,12 +730,16 @@ function normalizeItemKey(value: unknown): string {
 }
 
 function normalizeItemChannel(value: unknown): DeliveryChannel {
-  if (value === 'all' || value === 'email' || value === 'server_chan' || value === 'bark') return value
+  if (value === 'all' || value === 'email' || value === 'server_chan' || value === 'bark' || value === 'telegram') {
+    return value
+  }
   return 'global'
 }
 
 function normalizeDefaultChannel(value: unknown): Exclude<DeliveryChannel, 'global'> {
-  if (value === 'email' || value === 'server_chan' || value === 'bark') return value
+  if (value === 'email' || value === 'server_chan' || value === 'bark' || value === 'telegram') {
+    return value
+  }
   return 'all'
 }
 

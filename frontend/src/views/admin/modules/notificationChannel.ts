@@ -3,6 +3,7 @@ import { getI18nLocale } from '@/i18n'
 
 const CHANNEL_LABELS_ZH: Record<string, string> = {
   bark: 'Bark',
+  telegram: 'Telegram',
   get server_chan() { return translate('ui.serverChan') },
   get email() { return translate('ui.email') },
   get user_email() { return translate('ui.userEmail') },
@@ -13,6 +14,7 @@ const CHANNEL_LABELS_ZH: Record<string, string> = {
 
 const CHANNEL_LABELS_EN: Record<string, string> = {
   bark: 'Bark',
+  telegram: 'Telegram',
   server_chan: 'ServerChan',
   email: 'Email',
   user_email: 'User email',

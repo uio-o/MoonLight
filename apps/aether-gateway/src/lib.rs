@@ -84,6 +84,7 @@ mod stage_metrics;
 mod state;
 mod system_features;
 mod task_runtime;
+mod telegram_push;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 mod tokio_metrics;

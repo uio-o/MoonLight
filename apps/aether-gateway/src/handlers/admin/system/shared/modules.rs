@@ -6,6 +6,7 @@ use crate::handlers::shared::{
 };
 use crate::important_notification::important_notification_configured;
 use crate::server_chan_push::server_chan_push_configured;
+use crate::telegram_push::telegram_push_configured;
 use crate::GatewayError;
 use aether_admin::system as admin_system_kernel;
 use serde_json::json;
@@ -109,6 +110,18 @@ pub(crate) const ADMIN_MODULE_DEFINITIONS: &[AdminModuleDefinition] = &[
         admin_menu_order: 59,
     },
     AdminModuleDefinition {
+        name: "telegram_push",
+        display_name: "Telegram 推送",
+        description: "第三方推送服务，配置 Telegram Bot Token 与 Chat ID 并测试推送",
+        category: "integration",
+        env_key: "TELEGRAM_PUSH_AVAILABLE",
+        default_available: true,
+        admin_route: Some("/admin/modules/telegram"),
+        admin_menu_icon: Some("Send"),
+        admin_menu_group: Some("system"),
+        admin_menu_order: 59,
+    },
+    AdminModuleDefinition {
         name: "model_directives",
         display_name: "模型后缀参数",
         description: "允许通过模型名后缀覆盖推理参数或服务层级",
@@ -206,6 +219,7 @@ pub(crate) struct AdminModuleRuntimeState {
     important_notification_configured: bool,
     server_chan_push_configured: bool,
     bark_push_configured: bool,
+    telegram_push_configured: bool,
     s3_backup_configured: bool,
 }
 
@@ -290,6 +304,7 @@ pub(crate) async fn build_admin_module_runtime_state(
     let notification_configured = important_notification_configured(state.app()).await?;
     let server_chan_configured = server_chan_push_configured(state.app()).await?;
     let bark_configured = bark_push_configured(state.app()).await?;
+    let telegram_configured = telegram_push_configured(state.app()).await?;
     let backup_configured = s3_backup_configured(state.app()).await;
 
     Ok(AdminModuleRuntimeState {
@@ -299,6 +314,7 @@ pub(crate) async fn build_admin_module_runtime_state(
         important_notification_configured: notification_configured,
         server_chan_push_configured: server_chan_configured,
         bark_push_configured: bark_configured,
+        telegram_push_configured: telegram_configured,
         s3_backup_configured: backup_configured,
     })
 }
@@ -327,6 +343,7 @@ pub(crate) fn build_admin_module_validation_result(
             important_notification_configured: runtime.important_notification_configured,
             server_chan_push_configured: runtime.server_chan_push_configured,
             bark_push_configured: runtime.bark_push_configured,
+            telegram_push_configured: runtime.telegram_push_configured,
             s3_backup_configured: runtime.s3_backup_configured,
         },
     )

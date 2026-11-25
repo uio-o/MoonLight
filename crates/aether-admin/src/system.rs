@@ -944,6 +944,7 @@ const SENSITIVE_SYSTEM_CONFIG_KEYS: &[&str] = &[
     "module.server_chan_push.send_key",
     "module.important_notification.server_chan_send_key",
     "module.bark_push.device_key",
+    "module.telegram_push.bot_token",
 ];
 const ADMIN_API_FORMAT_DEFINITIONS: &[AdminApiFormatDefinition] = &[
     AdminApiFormatDefinition {
@@ -1816,6 +1817,7 @@ pub struct AdminModuleValidationInput<'a> {
     pub important_notification_configured: bool,
     pub server_chan_push_configured: bool,
     pub bark_push_configured: bool,
+    pub telegram_push_configured: bool,
     pub s3_backup_configured: bool,
 }
 
@@ -1830,6 +1832,7 @@ pub fn build_admin_module_validation_result(
         important_notification_configured,
         server_chan_push_configured,
         bark_push_configured,
+        telegram_push_configured,
         s3_backup_configured,
     } = input;
 
@@ -1959,6 +1962,16 @@ pub fn build_admin_module_validation_result(
                 (false, Some("请先配置 Bark Device Key".to_string()))
             }
         }
+        "telegram_push" => {
+            if telegram_push_configured {
+                (true, None)
+            } else {
+                (
+                    false,
+                    Some("请先配置 Telegram Bot Token 与 Chat ID".to_string()),
+                )
+            }
+        }
         "s3_backup" => {
             if s3_backup_configured {
                 (true, None)
@@ -1992,6 +2005,7 @@ pub fn build_admin_module_health(
         | "important_notification"
         | "bark_push"
         | "server_chan_push"
+        | "telegram_push"
         | "s3_backup" => "healthy",
         "gemini_files" => {
             if gemini_files_has_capable_key {
@@ -2314,6 +2328,10 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "module.bark_push.device_key" => Some(serde_json::Value::Null),
         "module.bark_push.server_url" => Some(json!(DEFAULT_BARK_API_BASE)),
         "module.bark_push.template" => Some(json!("")),
+        "module.telegram_push.enabled" => Some(json!(false)),
+        "module.telegram_push.bot_token" => Some(serde_json::Value::Null),
+        "module.telegram_push.chat_id" => Some(json!("")),
+        "module.telegram_push.template" => Some(json!("")),
         "module.chat_pii_redaction.enabled" => Some(json!(false)),
         "module.chat_pii_redaction.rules" => Some(chat_pii_redaction_default_rules()),
         "module.chat_pii_redaction.cache_ttl_seconds" => Some(json!(300)),
@@ -2794,7 +2812,8 @@ pub fn parse_admin_system_config_update(
         | "module.important_notification.enabled"
         | "module.important_notification.email_enabled"
         | "module.server_chan_push.enabled"
-        | "module.bark_push.enabled" => match value.as_bool() {
+        | "module.bark_push.enabled"
+        | "module.telegram_push.enabled" => match value.as_bool() {
             Some(enabled) => value = json!(enabled),
             None if value.is_null() => {
                 value = admin_system_config_default_value(&normalized_key).unwrap_or(json!(false));
@@ -2885,6 +2904,26 @@ pub fn parse_admin_system_config_update(
             })?;
         }
         "module.bark_push.template" => {
+            value = match value {
+                Value::Null => json!(""),
+                Value::String(raw) => json!(raw),
+                _ => {
+                    return Err((
+                        http::StatusCode::BAD_REQUEST,
+                        json!({ "detail": "请求数据验证失败" }),
+                    ));
+                }
+            };
+        }
+        "module.telegram_push.bot_token" => {
+            value = normalize_nullable_string_config_value(value).map_err(|_| {
+                (
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                )
+            })?;
+        }
+        "module.telegram_push.chat_id" | "module.telegram_push.template" => {
             value = match value {
                 Value::Null => json!(""),
                 Value::String(raw) => json!(raw),
@@ -4343,6 +4382,9 @@ mod tests {
         ));
         assert!(is_sensitive_admin_system_config_key(
             "module.bark_push.device_key"
+        ));
+        assert!(is_sensitive_admin_system_config_key(
+            "module.telegram_push.bot_token"
         ));
         assert!(!is_sensitive_admin_system_config_key("site_name"));
     }

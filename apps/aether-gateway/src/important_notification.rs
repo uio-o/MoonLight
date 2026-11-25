@@ -7,6 +7,7 @@ use crate::handlers::shared::{system_config_bool, system_config_string};
 use crate::server_chan_push::{
     read_server_chan_push_config, send_server_chan_push, ServerChanPushConfig,
 };
+use crate::telegram_push::{read_telegram_push_config, send_telegram_push, TelegramPushConfig};
 use crate::{AppState, GatewayError};
 use axum::body::Bytes;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,7 @@ pub(crate) enum ImportantNotificationChannelFilter {
     Email,
     ServerChan,
     Bark,
+    Telegram,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,7 @@ struct ImportantNotificationConfig {
     items: Vec<ImportantNotificationItemConfig>,
     server_chan: ServerChanPushConfig,
     bark: BarkPushConfig,
+    telegram: TelegramPushConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +82,7 @@ struct NotificationChannelReadiness {
     email: bool,
     server_chan: bool,
     bark: bool,
+    telegram: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,6 +249,9 @@ async fn read_notification_channel_readiness(
         email,
         server_chan: config.server_chan.enabled && config.server_chan.send_key.is_some(),
         bark: config.bark.enabled && config.bark.device_key.is_some(),
+        telegram: config.telegram.enabled
+            && config.telegram.bot_token.is_some()
+            && config.telegram.chat_id.is_some(),
     })
 }
 
@@ -254,11 +261,12 @@ fn channel_filter_has_ready_channel(
 ) -> bool {
     match filter {
         ImportantNotificationChannelFilter::All => {
-            readiness.email || readiness.server_chan || readiness.bark
+            readiness.email || readiness.server_chan || readiness.bark || readiness.telegram
         }
         ImportantNotificationChannelFilter::Email => readiness.email,
         ImportantNotificationChannelFilter::ServerChan => readiness.server_chan,
         ImportantNotificationChannelFilter::Bark => readiness.bark,
+        ImportantNotificationChannelFilter::Telegram => readiness.telegram,
     }
 }
 
@@ -319,6 +327,20 @@ async fn dispatch_important_notification(
         ImportantNotificationChannelFilter::All | ImportantNotificationChannelFilter::Bark
     ) {
         maybe_send_bark_notification(
+            state,
+            &config,
+            &notification,
+            bypass_enable_checks,
+            &mut reports,
+        )
+        .await;
+    }
+
+    if matches!(
+        channel_filter,
+        ImportantNotificationChannelFilter::All | ImportantNotificationChannelFilter::Telegram
+    ) {
+        maybe_send_telegram_notification(
             state,
             &config,
             &notification,
@@ -422,6 +444,7 @@ async fn read_important_notification_config(
         items: parse_notification_items(items.as_ref()),
         server_chan: read_server_chan_push_config(state).await?,
         bark: read_bark_push_config(state).await?,
+        telegram: read_telegram_push_config(state).await?,
     })
 }
 
@@ -433,6 +456,7 @@ fn parse_channel_filter(raw: &str) -> Option<ImportantNotificationChannelFilter>
             Some(ImportantNotificationChannelFilter::ServerChan)
         }
         "bark" => Some(ImportantNotificationChannelFilter::Bark),
+        "telegram" => Some(ImportantNotificationChannelFilter::Telegram),
         "global" | "" => None,
         _ => None,
     }
@@ -766,6 +790,56 @@ async fn maybe_send_bark_notification(
     }
 }
 
+async fn maybe_send_telegram_notification(
+    state: &AppState,
+    config: &ImportantNotificationConfig,
+    notification: &ImportantNotification,
+    bypass_channel_toggle: bool,
+    reports: &mut Vec<ImportantNotificationChannelReport>,
+) {
+    if !bypass_channel_toggle && !config.telegram.enabled {
+        return;
+    }
+    if config.telegram.bot_token.is_none() {
+        reports.push(ImportantNotificationChannelReport {
+            channel: "telegram",
+            success: false,
+            message: "未配置 Telegram Bot Token".to_string(),
+        });
+        return;
+    }
+    if config.telegram.chat_id.is_none() {
+        reports.push(ImportantNotificationChannelReport {
+            channel: "telegram",
+            success: false,
+            message: "未配置 Telegram Chat ID".to_string(),
+        });
+        return;
+    }
+    match send_telegram_push(
+        state,
+        &config.telegram,
+        &notification.title,
+        &notification.markdown_body,
+    )
+    .await
+    {
+        Ok(()) => reports.push(ImportantNotificationChannelReport {
+            channel: "telegram",
+            success: true,
+            message: "Telegram 通知已发送".to_string(),
+        }),
+        Err(err) => {
+            warn!(error = ?err, "failed to send telegram important notification");
+            reports.push(ImportantNotificationChannelReport {
+                channel: "telegram",
+                success: false,
+                message: format!("Telegram 通知发送失败: {err:?}"),
+            });
+        }
+    }
+}
+
 fn single_report(
     channel: &'static str,
     success: bool,
@@ -957,6 +1031,40 @@ mod tests {
             parse_channel_filter("bark"),
             Some(ImportantNotificationChannelFilter::Bark)
         );
+    }
+
+    #[test]
+    fn parse_channel_filter_accepts_telegram() {
+        assert_eq!(
+            parse_channel_filter("telegram"),
+            Some(ImportantNotificationChannelFilter::Telegram)
+        );
+        assert_eq!(
+            parse_channel_filter(" Telegram "),
+            Some(ImportantNotificationChannelFilter::Telegram)
+        );
+    }
+
+    #[test]
+    fn channel_filter_readiness_covers_telegram() {
+        let readiness = NotificationChannelReadiness {
+            email: false,
+            server_chan: false,
+            bark: false,
+            telegram: true,
+        };
+        assert!(channel_filter_has_ready_channel(
+            ImportantNotificationChannelFilter::All,
+            readiness
+        ));
+        assert!(channel_filter_has_ready_channel(
+            ImportantNotificationChannelFilter::Telegram,
+            readiness
+        ));
+        assert!(!channel_filter_has_ready_channel(
+            ImportantNotificationChannelFilter::Bark,
+            readiness
+        ));
     }
 
     #[test]

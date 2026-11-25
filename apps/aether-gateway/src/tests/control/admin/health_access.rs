@@ -1150,6 +1150,11 @@ async fn gateway_handles_admin_modules_status_locally_with_trusted_admin_princip
     );
     assert_eq!(payload["bark_push"]["display_name"], "Bark 推送");
     assert_eq!(payload["bark_push"]["admin_route"], "/admin/modules/bark");
+    assert_eq!(payload["telegram_push"]["display_name"], "Telegram 推送");
+    assert_eq!(
+        payload["telegram_push"]["admin_route"],
+        "/admin/modules/telegram"
+    );
     assert_eq!(payload["s3_backup"]["display_name"], "S3 备份");
     assert_eq!(
         payload["s3_backup"]["admin_route"],
