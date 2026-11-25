@@ -916,9 +916,10 @@ fn escape_html(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_notification_item_template, important_notification_configured, parse_channel_filter,
-        parse_notification_items, parse_recipient_list, ImportantNotification,
-        ImportantNotificationChannelFilter, IMPORTANT_NOTIFICATION_EMAIL_ENABLED_KEY,
+        apply_notification_item_template, channel_filter_has_ready_channel,
+        important_notification_configured, parse_channel_filter, parse_notification_items,
+        parse_recipient_list, ImportantNotification, ImportantNotificationChannelFilter,
+        NotificationChannelReadiness, IMPORTANT_NOTIFICATION_EMAIL_ENABLED_KEY,
         IMPORTANT_NOTIFICATION_EMAIL_RECIPIENTS_KEY, MAX_NOTIFICATION_ITEMS,
         MAX_NOTIFICATION_RECIPIENTS, MAX_NOTIFICATION_RECIPIENT_BYTES,
         MAX_NOTIFICATION_TEMPLATE_BYTES,

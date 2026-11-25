@@ -1,10 +1,10 @@
 use aether_data_contracts::repository::usage::{
     canonical_usage_body_ref_for, classify_client_ip_filter, parse_usage_body_ref,
-    read_decompressed_usage_json, usage_body_ref, ApiKeyLastUsedDelta,
-    ManagementTokenCounterDelta, ProxyNodeCounterDelta, ClientIpFilterKind,
-    StoredUsageAuditAggregation, StoredUsageAuditSummary, StoredUsageBodyPayload,
-    StoredUsageBreakdownSummaryRow, StoredUsageCacheAffinityHitSummary,
-    StoredUsageCacheAffinityIntervalRow, StoredUsageCacheHitSummary, StoredUsageCostSavingsSummary,
+    read_decompressed_usage_json, usage_body_ref, ApiKeyLastUsedDelta, ClientIpFilterKind,
+    ManagementTokenCounterDelta, ProxyNodeCounterDelta, StoredUsageAuditAggregation,
+    StoredUsageAuditSummary, StoredUsageBodyPayload, StoredUsageBreakdownSummaryRow,
+    StoredUsageCacheAffinityHitSummary, StoredUsageCacheAffinityIntervalRow,
+    StoredUsageCacheHitSummary, StoredUsageCostSavingsSummary,
     StoredUsageDashboardDailyBreakdownRow, StoredUsageDashboardProviderCount,
     StoredUsageDashboardStatsSummary, StoredUsageDashboardSummary, StoredUsageErrorDistributionRow,
     StoredUsageHealthTimelineRow, StoredUsageLeaderboardSummary,
@@ -1879,10 +1879,7 @@ fn push_postgres_usage_client_ip_filter(
     has_where: &mut bool,
     client_ip: Option<&str>,
 ) {
-    let Some(client_ip) = client_ip
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
+    let Some(client_ip) = client_ip.map(str::trim).filter(|value| !value.is_empty()) else {
         return;
     };
 
@@ -1898,7 +1895,8 @@ fn push_postgres_usage_client_ip_filter(
             // NULL rather than abort the query. `aether_safe_inet` (added by
             // migration) does the guarded cast; a regex would still let values
             // such as `121.56.27.4:80` through and blow up on the cast.
-            let predicate = "public.aether_safe_inet(\"usage\".request_metadata->>'client_ip') <<= ";
+            let predicate =
+                "public.aether_safe_inet(\"usage\".request_metadata->>'client_ip') <<= ";
             builder.push(predicate).push_bind(network).push("::inet");
         }
         ClientIpFilterKind::Prefix(prefix) => {

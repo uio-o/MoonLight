@@ -8,10 +8,11 @@ use super::{
     attach_usage_routing_snapshot_metadata, attach_usage_settlement_pricing_snapshot_metadata,
     build_usage_health_timeline_query, clear_previous_request_body_facts, inflate_usage_json_value,
     prepare_request_metadata_for_body_storage, prepare_usage_body_storage,
-    prepare_usage_for_persistence, push_postgres_usage_websocket_filter,
-    request_body_capture_replaces_derived_facts, resolved_read_usage_body_ref,
-    resolved_write_usage_body_ref, split_dashboard_daily_aggregate_range,
-    split_dashboard_hourly_aggregate_range, usage_body_capture_state_for_storage, usage_body_ref,
+    prepare_usage_for_persistence, push_postgres_usage_client_ip_filter,
+    push_postgres_usage_websocket_filter, request_body_capture_replaces_derived_facts,
+    resolved_read_usage_body_ref, resolved_write_usage_body_ref,
+    split_dashboard_daily_aggregate_range, split_dashboard_hourly_aggregate_range,
+    usage_body_capture_state_for_storage, usage_body_ref,
     usage_capture_update_allowed, usage_effective_input_tokens, usage_http_audit_body_refs,
     usage_http_audit_capture_mode, usage_routing_snapshot_from_usage,
     usage_settlement_pricing_snapshot_from_usage, usage_total_input_context, AggregateRangeSplit,
@@ -3789,7 +3790,9 @@ fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
     assert!(source.contains("request_metadata->>'client_family'"));
     assert!(source.contains("push_postgres_usage_client_ip_filter"));
     assert!(source.contains("request_metadata->>'client_ip'"));
-    assert!(source.contains("public.aether_safe_inet(\"usage\".request_metadata->>'client_ip')"));
+    // A malformed `client_ip` must degrade to NULL instead of aborting the query, so the
+    // network branch has to go through the guarded cast rather than a plain `::inet`.
+    assert!(source.contains("public.aether_safe_inet("));
     assert!(source.contains("exclude_unknown_model_or_provider"));
     assert!(source.contains("NOT IN ('unknown', 'unknow')"));
     assert_eq!(
@@ -3806,6 +3809,31 @@ fn usage_sql_admin_record_filters_are_pushed_into_postgres_queries() {
         5,
         "the client_ip filter must cover list/count and keyword list/count"
     );
+}
+
+#[test]
+fn usage_sql_client_ip_filter_uses_guarded_inet_cast_for_networks() {
+    let mut builder = QueryBuilder::<Postgres>::new("SELECT * FROM usage");
+    let mut has_where = false;
+    push_postgres_usage_client_ip_filter(&mut builder, &mut has_where, Some("10.0.0.0/8"));
+
+    assert!(has_where, "a network filter should add a predicate");
+    let sql = builder.sql();
+    assert!(sql.contains("public.aether_safe_inet("));
+    assert!(sql.contains("request_metadata->>'client_ip'"));
+    assert!(sql.contains("<<= "));
+    assert!(sql.contains("::inet"));
+}
+
+#[test]
+fn usage_sql_client_ip_filter_skips_blank_values() {
+    for client_ip in [None, Some(""), Some("   ")] {
+        let mut builder = QueryBuilder::<Postgres>::new("SELECT * FROM usage");
+        let mut has_where = false;
+        push_postgres_usage_client_ip_filter(&mut builder, &mut has_where, client_ip);
+
+        assert!(!has_where, "{client_ip:?} should not add a predicate");
+    }
 }
 
 #[test]

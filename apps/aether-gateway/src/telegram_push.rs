@@ -27,7 +27,9 @@ const MAX_TELEGRAM_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TELEGRAM_RENDERED_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Telegram rejects `sendMessage` payloads over 4096 UTF-16 code units.
 const MAX_TELEGRAM_MESSAGE_UNITS: usize = 4096;
-const TELEGRAM_TRUNCATION_SUFFIX: &str = "…";
+/// Kept as a `char` so its UTF-16 length comes from `char::len_utf16`;
+/// `str` has no `len_utf16` in stable Rust.
+const TELEGRAM_TRUNCATION_SUFFIX: char = '…';
 
 #[derive(Clone)]
 pub(crate) struct TelegramPushConfig {
@@ -133,7 +135,9 @@ pub(crate) async fn send_telegram_push(
         ));
     }
     let Some(chat_id) = config.chat_id.as_deref() else {
-        return Err(GatewayError::Internal("未配置 Telegram Chat ID".to_string()));
+        return Err(GatewayError::Internal(
+            "未配置 Telegram Chat ID".to_string(),
+        ));
     };
     let chat_id = chat_id.trim();
     if chat_id.is_empty() {
@@ -192,7 +196,9 @@ pub(crate) async fn send_telegram_push(
         let retry_body =
             aether_http::read_response_bytes_with_limit(response, MAX_PUSH_RESPONSE_BYTES)
                 .await
-                .map_err(|err| GatewayError::Internal(telegram_response_body_error_message(&err)))?;
+                .map_err(|err| {
+                    GatewayError::Internal(telegram_response_body_error_message(&err))
+                })?;
         let retry_text = String::from_utf8_lossy(&retry_body);
         if retry_status.is_success() {
             return Ok(());
@@ -265,9 +271,7 @@ fn is_safe_telegram_chat_id(chat_id: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
     }
     let digits = chat_id.strip_prefix('-').unwrap_or(chat_id);
-    !digits.is_empty()
-        && digits.len() <= 32
-        && digits.bytes().all(|byte| byte.is_ascii_digit())
+    !digits.is_empty() && digits.len() <= 32 && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn validate_telegram_field(field: &str, value: &str, max_bytes: usize) -> Result<(), GatewayError> {
@@ -347,7 +351,7 @@ fn truncate_telegram_message(text: String) -> String {
     match cut {
         Some(index) => {
             let mut truncated = text[..index].to_string();
-            truncated.push_str(TELEGRAM_TRUNCATION_SUFFIX);
+            truncated.push(TELEGRAM_TRUNCATION_SUFFIX);
             truncated
         }
         None => text,
@@ -468,7 +472,10 @@ fn telegram_response_body_error_message(error: &aether_http::ResponseBodyReadErr
             format!("Telegram 响应超过 {max_bytes} 字节")
         }
         aether_http::ResponseBodyReadError::Read(error) => {
-            format!("Telegram 响应读取失败 ({})", telegram_reqwest_error_kind(error))
+            format!(
+                "Telegram 响应读取失败 ({})",
+                telegram_reqwest_error_kind(error)
+            )
         }
     }
 }
@@ -495,7 +502,9 @@ mod tests {
 
     #[test]
     fn telegram_bot_token_accepts_botfather_shape() {
-        assert!(is_safe_telegram_bot_token("123456789:AAHfjK9xQ2ZtLmNoPqRsTuVwXyZ0123456789"));
+        assert!(is_safe_telegram_bot_token(
+            "123456789:AAHfjK9xQ2ZtLmNoPqRsTuVwXyZ0123456789"
+        ));
     }
 
     #[test]
@@ -529,7 +538,14 @@ mod tests {
     #[test]
     fn telegram_chat_id_rejects_junk() {
         for invalid in [
-            "", "-", "@", "@moon light", "12 345", "12345\n", "0x10", "+12345",
+            "",
+            "-",
+            "@",
+            "@moon light",
+            "12 345",
+            "12345\n",
+            "0x10",
+            "+12345",
         ] {
             assert!(!is_safe_telegram_chat_id(invalid), "{invalid}");
         }
