@@ -26,6 +26,7 @@ mod settlement;
 mod tx;
 mod types;
 mod usage;
+mod user_telegram_bindings;
 mod users;
 mod video_tasks;
 mod wallet;
@@ -65,6 +66,7 @@ pub use tx::{
 };
 pub use types::DatabaseRecordId;
 pub use usage::{cleanup, SqlxUsageReadRepository};
+pub use user_telegram_bindings::SqlxUserTelegramBindingRepository;
 pub use users::SqlxUserReadRepository;
 pub use video_tasks::{SqlxVideoTaskReadRepository, SqlxVideoTaskRepository};
 pub use wallet::SqlxWalletRepository;

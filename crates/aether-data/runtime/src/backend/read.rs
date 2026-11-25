@@ -21,6 +21,7 @@ use crate::repository::proxy_nodes::ProxyNodeReadRepository;
 use crate::repository::quota::ProviderQuotaReadRepository;
 use crate::repository::routing_profiles::RoutingGroupReadRepository;
 use crate::repository::usage::UsageReadRepository;
+use crate::repository::user_telegram_bindings::UserTelegramBindingReadRepository;
 use crate::repository::users::UserReadRepository;
 use crate::repository::video_tasks::VideoTaskReadRepository;
 use crate::repository::wallet::WalletReadRepository;
@@ -45,6 +46,7 @@ pub struct DataReadRepositories {
     provider_quotas: Option<Arc<dyn ProviderQuotaReadRepository>>,
     routing_groups: Option<Arc<dyn RoutingGroupReadRepository>>,
     usage: Option<Arc<dyn UsageReadRepository>>,
+    user_telegram_bindings: Option<Arc<dyn UserTelegramBindingReadRepository>>,
     users: Option<Arc<dyn UserReadRepository>>,
     video_tasks: Option<Arc<dyn VideoTaskReadRepository>>,
     wallets: Option<Arc<dyn WalletReadRepository>>,
@@ -77,6 +79,10 @@ impl fmt::Debug for DataReadRepositories {
             .field("has_provider_quotas", &self.provider_quotas.is_some())
             .field("has_routing_groups", &self.routing_groups.is_some())
             .field("has_usage", &self.usage.is_some())
+            .field(
+                "has_user_telegram_bindings",
+                &self.user_telegram_bindings.is_some(),
+            )
             .field("has_users", &self.users.is_some())
             .field("has_video_tasks", &self.video_tasks.is_some())
             .field("has_wallets", &self.wallets.is_some())
@@ -157,6 +163,10 @@ impl DataReadRepositories {
         }
         if self.usage.is_none() {
             self.usage = Some(PostgresBackend::usage_read_repository(backend));
+        }
+        if self.user_telegram_bindings.is_none() {
+            self.user_telegram_bindings =
+                Some(PostgresBackend::user_telegram_binding_read_repository(backend));
         }
         if self.users.is_none() {
             self.users = Some(PostgresBackend::user_read_repository(backend));
@@ -249,6 +259,10 @@ impl DataReadRepositories {
         self.usage.clone()
     }
 
+    pub fn user_telegram_bindings(&self) -> Option<Arc<dyn UserTelegramBindingReadRepository>> {
+        self.user_telegram_bindings.clone()
+    }
+
     pub fn users(&self) -> Option<Arc<dyn UserReadRepository>> {
         self.users.clone()
     }
@@ -280,6 +294,7 @@ impl DataReadRepositories {
             || self.provider_quotas.is_some()
             || self.routing_groups.is_some()
             || self.usage.is_some()
+            || self.user_telegram_bindings.is_some()
             || self.users.is_some()
             || self.video_tasks.is_some()
             || self.wallets.is_some()

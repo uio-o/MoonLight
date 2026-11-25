@@ -59,6 +59,10 @@ use crate::repository::settlement::{SettlementWriteRepository, SqlxSettlementRep
 use crate::repository::usage::{
     SqlxUsageReadRepository, UsageReadRepository, UsageWriteRepository,
 };
+use crate::repository::user_telegram_bindings::{
+    SqlxUserTelegramBindingRepository, UserTelegramBindingReadRepository,
+    UserTelegramBindingWriteRepository,
+};
 use crate::repository::users::{SqlxUserReadRepository, UserReadRepository};
 use crate::repository::video_tasks::{
     SqlxVideoTaskReadRepository, SqlxVideoTaskRepository, VideoTaskReadRepository,
@@ -231,6 +235,18 @@ impl PostgresBackend {
 
     pub fn usage_write_repository(&self) -> Arc<dyn UsageWriteRepository> {
         Arc::new(SqlxUsageReadRepository::new(self.pool_clone()))
+    }
+
+    pub fn user_telegram_binding_read_repository(
+        &self,
+    ) -> Arc<dyn UserTelegramBindingReadRepository> {
+        Arc::new(SqlxUserTelegramBindingRepository::new(self.pool_clone()))
+    }
+
+    pub fn user_telegram_binding_write_repository(
+        &self,
+    ) -> Arc<dyn UserTelegramBindingWriteRepository> {
+        Arc::new(SqlxUserTelegramBindingRepository::new(self.pool_clone()))
     }
 
     pub fn wallet_read_repository(&self) -> Arc<dyn WalletReadRepository> {

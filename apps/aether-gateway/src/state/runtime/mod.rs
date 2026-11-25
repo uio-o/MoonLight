@@ -20,6 +20,7 @@ mod referrals;
 mod security;
 mod usage_queries;
 mod user_preferences;
+mod user_telegram_bindings;
 mod wallet;
 
 impl AppState {
@@ -74,6 +75,14 @@ impl AppState {
 
     pub fn has_usage_data_writer(&self) -> bool {
         self.data.has_usage_writer()
+    }
+
+    pub fn has_user_telegram_binding_data_reader(&self) -> bool {
+        self.data.has_user_telegram_binding_reader()
+    }
+
+    pub fn has_user_telegram_binding_data_writer(&self) -> bool {
+        self.data.has_user_telegram_binding_writer()
     }
 
     pub fn has_usage_worker_backend(&self) -> bool {

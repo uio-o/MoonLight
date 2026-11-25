@@ -155,6 +155,10 @@ use aether_data_contracts::repository::usage::{
     ProxyNodeCounterDelta, StoredProviderUsageSummary, StoredRequestUsageAudit, UpsertUsageRecord,
     UsageReadRepository, UsageWriteRepository,
 };
+use aether_data_contracts::repository::user_telegram_bindings::{
+    StoredUserTelegramBinding, UserTelegramBindingReadRepository,
+    UserTelegramBindingWriteRepository,
+};
 use aether_data_contracts::repository::video_tasks::{
     StoredVideoTask, UpsertVideoTask, VideoTaskLookupKey, VideoTaskModelCount,
     VideoTaskQueryFilter, VideoTaskReadRepository, VideoTaskStatusCount, VideoTaskWriteRepository,
@@ -204,6 +208,8 @@ pub(crate) struct GatewayDataState {
     routing_group_writer: Option<Arc<dyn RoutingGroupWriteRepository>>,
     usage_reader: Option<Arc<dyn UsageReadRepository>>,
     usage_writer: Option<Arc<dyn UsageWriteRepository>>,
+    user_telegram_binding_reader: Option<Arc<dyn UserTelegramBindingReadRepository>>,
+    user_telegram_binding_writer: Option<Arc<dyn UserTelegramBindingWriteRepository>>,
     user_reader: Option<Arc<dyn UserReadRepository>>,
     user_preferences: Option<Arc<RwLock<BTreeMap<String, StoredUserPreferenceRecord>>>>,
     usage_worker_queue: Option<Arc<dyn RuntimeQueueStore>>,
@@ -373,6 +379,14 @@ impl fmt::Debug for GatewayDataState {
             )
             .field("has_usage_reader", &self.usage_reader.is_some())
             .field("has_usage_writer", &self.usage_writer.is_some())
+            .field(
+                "has_user_telegram_binding_reader",
+                &self.user_telegram_binding_reader.is_some(),
+            )
+            .field(
+                "has_user_telegram_binding_writer",
+                &self.user_telegram_binding_writer.is_some(),
+            )
             .field("has_user_preferences", &self.user_preferences.is_some())
             .field("has_usage_worker_queue", &self.usage_worker_queue.is_some())
             .field("has_video_task_reader", &self.video_task_reader.is_some())
@@ -402,6 +416,7 @@ mod request_candidate_cache;
 mod routing_group_cache;
 mod routing_profiles;
 mod runtime;
+mod user_telegram_bindings;
 #[cfg(test)]
 mod testing;
 #[cfg(feature = "testkit")]

@@ -208,6 +208,7 @@ fn notification_service_default_items() -> serde_json::Value {
             "markdown_template": "",
             "text_template": "",
             "user_email_enabled": false,
+            "user_telegram_enabled": false,
             "system": true
         },
         {
@@ -219,6 +220,7 @@ fn notification_service_default_items() -> serde_json::Value {
             "markdown_template": "号池 `{provider_name}` 出现异常，请检查服务状态。",
             "text_template": "号池 {provider_name} 出现异常，请检查服务状态。",
             "user_email_enabled": false,
+            "user_telegram_enabled": false,
             "system": true
         },
         {
@@ -230,6 +232,7 @@ fn notification_service_default_items() -> serde_json::Value {
             "markdown_template": "你的账户余额已低于提醒阈值，请及时处理。",
             "text_template": "你的账户余额已低于提醒阈值，请及时处理。",
             "user_email_enabled": true,
+            "user_telegram_enabled": true,
             "system": true
         }
     ])
@@ -945,6 +948,7 @@ const SENSITIVE_SYSTEM_CONFIG_KEYS: &[&str] = &[
     "module.important_notification.server_chan_send_key",
     "module.bark_push.device_key",
     "module.telegram_push.bot_token",
+    "module.telegram_push.webhook_secret",
 ];
 const ADMIN_API_FORMAT_DEFINITIONS: &[AdminApiFormatDefinition] = &[
     AdminApiFormatDefinition {
@@ -2330,8 +2334,11 @@ pub fn admin_system_config_default_value(key: &str) -> Option<serde_json::Value>
         "module.bark_push.template" => Some(json!("")),
         "module.telegram_push.enabled" => Some(json!(false)),
         "module.telegram_push.bot_token" => Some(serde_json::Value::Null),
+        "module.telegram_push.bot_username" => Some(json!("")),
         "module.telegram_push.chat_id" => Some(json!("")),
+        "module.telegram_push.public_url" => Some(json!("")),
         "module.telegram_push.template" => Some(json!("")),
+        "module.telegram_push.webhook_secret" => Some(serde_json::Value::Null),
         "module.chat_pii_redaction.enabled" => Some(json!(false)),
         "module.chat_pii_redaction.rules" => Some(chat_pii_redaction_default_rules()),
         "module.chat_pii_redaction.cache_ttl_seconds" => Some(json!(300)),
@@ -2627,6 +2634,10 @@ fn normalize_notification_service_items_value(
             .get("user_email_enabled")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let user_telegram_enabled = raw_item
+            .get("user_telegram_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let system = raw_item
             .get("system")
             .and_then(Value::as_bool)
@@ -2641,6 +2652,7 @@ fn normalize_notification_service_items_value(
             "markdown_template": markdown_template,
             "text_template": text_template,
             "user_email_enabled": user_email_enabled,
+            "user_telegram_enabled": user_telegram_enabled,
             "system": system,
         }));
     }
@@ -2923,10 +2935,13 @@ pub fn parse_admin_system_config_update(
                 )
             })?;
         }
-        "module.telegram_push.chat_id" | "module.telegram_push.template" => {
+        "module.telegram_push.chat_id"
+        | "module.telegram_push.template"
+        | "module.telegram_push.public_url"
+        | "module.telegram_push.bot_username" => {
             value = match value {
                 Value::Null => json!(""),
-                Value::String(raw) => json!(raw),
+                Value::String(raw) => json!(raw.trim()),
                 _ => {
                     return Err((
                         http::StatusCode::BAD_REQUEST,
@@ -2934,6 +2949,14 @@ pub fn parse_admin_system_config_update(
                     ));
                 }
             };
+        }
+        "module.telegram_push.webhook_secret" => {
+            value = normalize_nullable_string_config_value(value).map_err(|_| {
+                (
+                    http::StatusCode::BAD_REQUEST,
+                    json!({ "detail": "请求数据验证失败" }),
+                )
+            })?;
         }
         "smtp_host" | "smtp_from_email" | "smtp_from_name" => {
             value = normalize_smtp_control_config_value(value).map_err(|_| {

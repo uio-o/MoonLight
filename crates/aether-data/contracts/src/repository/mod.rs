@@ -18,6 +18,7 @@ pub mod referrals;
 pub mod routing_profiles;
 pub mod settlement;
 pub mod usage;
+pub mod user_telegram_bindings;
 pub mod users;
 pub mod video_tasks;
 pub mod wallet;

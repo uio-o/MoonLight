@@ -1,4 +1,4 @@
-use axum::routing::get;
+use axum::routing::{any, get, post};
 use axum::Router;
 
 use crate::{
@@ -29,6 +29,8 @@ pub(crate) fn mount_public_support_routes(router: Router<AppState>) -> Router<Ap
         .route("/api/capabilities", get(proxy_request))
         .route("/api/capabilities/user-configurable", get(proxy_request))
         .route("/api/capabilities/model/{*model_path}", get(proxy_request))
+        .route("/api/user/telegram/binding", any(proxy_request))
+        .route("/api/telegram/webhook", post(proxy_request))
         .route("/api/vscodex/ws", get(vscodex_ws_proxy))
         .route("/install/{*install_path}", get(proxy_request))
         .route("/install-tunnel/{*install_path}", get(proxy_request))

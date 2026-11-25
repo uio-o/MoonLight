@@ -1,14 +1,22 @@
 use crate::handlers::shared::{
-    decrypt_or_migrate_system_config_secret, system_config_bool, system_config_string,
+    decrypt_or_migrate_system_config_secret, encrypt_system_config_secret, system_config_bool,
+    system_config_string,
 };
 use crate::{AppState, GatewayError};
+use aether_data::repository::user_telegram_bindings::{
+    USER_TELEGRAM_LINK_CODE_ALPHABET, USER_TELEGRAM_LINK_CODE_LEN,
+};
 use serde_json::{json, Value};
 use std::time::Duration;
+use uuid::Uuid;
 
 pub(crate) const TELEGRAM_PUSH_ENABLED_KEY: &str = "module.telegram_push.enabled";
 pub(crate) const TELEGRAM_PUSH_BOT_TOKEN_KEY: &str = "module.telegram_push.bot_token";
+pub(crate) const TELEGRAM_PUSH_BOT_USERNAME_KEY: &str = "module.telegram_push.bot_username";
 pub(crate) const TELEGRAM_PUSH_CHAT_ID_KEY: &str = "module.telegram_push.chat_id";
+pub(crate) const TELEGRAM_PUSH_PUBLIC_URL_KEY: &str = "module.telegram_push.public_url";
 pub(crate) const TELEGRAM_PUSH_TEMPLATE_KEY: &str = "module.telegram_push.template";
+pub(crate) const TELEGRAM_PUSH_WEBHOOK_SECRET_KEY: &str = "module.telegram_push.webhook_secret";
 
 // The Bot API endpoint is fixed. Telegram has no self-hosted mode worth
 // supporting here, and pinning the host keeps the request path (which carries
@@ -30,6 +38,15 @@ const MAX_TELEGRAM_MESSAGE_UNITS: usize = 4096;
 /// Kept as a `char` so its UTF-16 length comes from `char::len_utf16`;
 /// `str` has no `len_utf16` in stable Rust.
 const TELEGRAM_TRUNCATION_SUFFIX: char = '…';
+const MAX_TELEGRAM_PUBLIC_URL_BYTES: usize = 512;
+const MAX_TELEGRAM_WEBHOOK_SECRET_BYTES: usize = 256;
+const MAX_TELEGRAM_BOT_USERNAME_BYTES: usize = 64;
+/// Where Telegram posts inbound updates. Kept next to the API base so the
+/// externally advertised URL and the locally mounted route cannot drift apart.
+const TELEGRAM_WEBHOOK_PATH: &str = "/api/telegram/webhook";
+/// How long a minted link code stays redeemable. Short enough that a code seen
+/// over a shoulder expires before it can be used elsewhere.
+pub(crate) const USER_TELEGRAM_LINK_CODE_TTL_SECS: u64 = 15 * 60;
 
 #[derive(Clone)]
 pub(crate) struct TelegramPushConfig {
@@ -92,7 +109,9 @@ pub(crate) async fn read_telegram_push_config(
 
 /// The bot token is stored as an encrypted system-config secret, so it is read
 /// back through the same decrypt-or-migrate path the other push channels use.
-async fn read_telegram_bot_token(state: &AppState) -> Result<Option<String>, GatewayError> {
+pub(crate) async fn read_telegram_bot_token(
+    state: &AppState,
+) -> Result<Option<String>, GatewayError> {
     let Some(value) = state
         .read_system_config_json_value(TELEGRAM_PUSH_BOT_TOKEN_KEY)
         .await?
@@ -110,6 +129,235 @@ async fn read_telegram_bot_token(state: &AppState) -> Result<Option<String>, Gat
     }
     validate_telegram_field("bot_token", &value, MAX_TELEGRAM_BOT_TOKEN_BYTES)?;
     Ok(Some(value))
+}
+
+/// Telegram must reach the webhook from the public internet. This deployment
+/// terminates TLS at a reverse proxy and has no `PUBLIC_URL` setting, so the
+/// operator records the external address here instead of in the environment.
+pub(crate) async fn read_telegram_public_base_url(
+    state: &AppState,
+) -> Result<Option<String>, GatewayError> {
+    let Some(value) = state
+        .read_system_config_json_value(TELEGRAM_PUSH_PUBLIC_URL_KEY)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(value) = system_config_string(Some(&value)) else {
+        return Ok(None);
+    };
+    match normalize_telegram_public_base_url(&value) {
+        // A blank value is the same as unconfigured, never an empty base URL.
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        // A malformed address is an operator mistake worth surfacing on the
+        // settings page rather than silently disabling per-user binding.
+        Err(message) => Err(GatewayError::Internal(message.to_string())),
+    }
+}
+
+/// Canonicalize an externally advertised base URL. Telegram refuses plain HTTP
+/// and loopback hosts, and credentials must never end up in a URL Telegram
+/// stores and replays on every update.
+pub(crate) fn normalize_telegram_public_base_url(raw: &str) -> Result<String, &'static str> {
+    let value = raw.trim().trim_end_matches('/');
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.len() > MAX_TELEGRAM_PUBLIC_URL_BYTES {
+        return Err("Telegram 外部访问地址过长");
+    }
+    let parsed = url::Url::parse(value).map_err(|_| "Telegram 外部访问地址格式无效")?;
+    if parsed.scheme() != "https" {
+        return Err("Telegram 外部访问地址必须使用 https");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Telegram 外部访问地址不能包含账号或密码");
+    }
+    let host = parsed
+        .host_str()
+        .ok_or("Telegram 外部访问地址缺少主机名")?;
+    if host.eq_ignore_ascii_case("localhost")
+        || matches!(host, "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]")
+    {
+        return Err("Telegram 外部访问地址不能是本机回环地址");
+    }
+    Ok(value.to_string())
+}
+
+fn telegram_webhook_url(public_base_url: &str) -> String {
+    format!("{public_base_url}{TELEGRAM_WEBHOOK_PATH}")
+}
+
+/// Shared secret stamped onto the webhook by `setWebhook` and echoed back by
+/// Telegram on every update. Without it the receiver would accept callbacks from
+/// anyone who learns the path, and a guessed link code could then be claimed
+/// from a foreign chat.
+pub(crate) async fn read_telegram_webhook_secret(
+    state: &AppState,
+) -> Result<Option<String>, GatewayError> {
+    let Some(value) = state
+        .read_system_config_json_value(TELEGRAM_PUSH_WEBHOOK_SECRET_KEY)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(value) = system_config_string(Some(&value)) else {
+        return Ok(None);
+    };
+    let value = decrypt_or_migrate_system_config_secret(
+        state,
+        TELEGRAM_PUSH_WEBHOOK_SECRET_KEY,
+        value,
+    )
+    .await?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    validate_telegram_field("webhook_secret", &value, MAX_TELEGRAM_WEBHOOK_SECRET_BYTES)?;
+    Ok(Some(value))
+}
+
+/// Mint the webhook secret on first use and store it encrypted, so the receiver
+/// is never left accepting unauthenticated callbacks. Re-registering the webhook
+/// reuses the stored secret, which is what makes repeated `setWebhook` calls
+/// safe to issue.
+async fn ensure_telegram_webhook_secret(state: &AppState) -> Result<String, GatewayError> {
+    if let Some(secret) = read_telegram_webhook_secret(state).await? {
+        return Ok(secret);
+    }
+    let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let stored = encrypt_system_config_secret(state, TELEGRAM_PUSH_WEBHOOK_SECRET_KEY, &secret)
+        .ok_or_else(|| GatewayError::Internal("Telegram Webhook 密钥加密不可用".to_string()))?;
+    state
+        .upsert_system_config_json_value(
+            TELEGRAM_PUSH_WEBHOOK_SECRET_KEY,
+            &json!(stored),
+            Some("Telegram Webhook 校验密钥"),
+        )
+        .await?;
+    Ok(secret)
+}
+
+pub(crate) async fn read_telegram_bot_username(
+    state: &AppState,
+) -> Result<Option<String>, GatewayError> {
+    let Some(value) = state
+        .read_system_config_json_value(TELEGRAM_PUSH_BOT_USERNAME_KEY)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(value) = system_config_string(Some(&value)) else {
+        return Ok(None);
+    };
+    match normalize_telegram_bot_username(&value) {
+        Some(value) => Ok(Some(value)),
+        None => Err(GatewayError::Internal(
+            "Telegram Bot Username 格式无效".to_string(),
+        )),
+    }
+}
+
+/// Accept both `@moonlight_bot` and `moonlight_bot`; the value only ever feeds a
+/// `https://t.me/<username>` deep link, so it is validated as a handle.
+pub(crate) fn normalize_telegram_bot_username(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_start_matches('@');
+    if value.is_empty()
+        || value.len() > MAX_TELEGRAM_BOT_USERNAME_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        || !value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+/// Point Telegram at this instance. Registration is idempotent, so it is safe to
+/// re-issue whenever a link code is minted: the operator may have re-deployed
+/// behind a new external address, and Telegram silently discards updates for a
+/// webhook that no longer resolves.
+pub(crate) async fn register_telegram_webhook(
+    state: &AppState,
+    bot_token: &str,
+) -> Result<(), GatewayError> {
+    let Some(public_base_url) = read_telegram_public_base_url(state).await? else {
+        return Err(GatewayError::Internal(
+            "未配置 Telegram 外部访问地址，无法接收用户绑定指令".to_string(),
+        ));
+    };
+    let secret = ensure_telegram_webhook_secret(state).await?;
+    let payload = json!({
+        "url": telegram_webhook_url(&public_base_url),
+        "allowed_updates": ["message"],
+        "drop_pending_updates": false,
+        "secret_token": secret,
+    });
+    telegram_bot_api_call(bot_token, "setWebhook", payload).await?;
+    Ok(())
+}
+
+/// One Bot API round trip. Callers must have validated the token with
+/// `is_safe_telegram_bot_token` first, because it is interpolated into the path.
+async fn telegram_bot_api_call(
+    bot_token: &str,
+    method: &str,
+    payload: Value,
+) -> Result<Value, GatewayError> {
+    let client = build_pinned_telegram_client()
+        .await
+        .map_err(|message| GatewayError::Internal(message.to_string()))?;
+    let url = format!("{TELEGRAM_API_BASE}/bot{bot_token}/{method}");
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| GatewayError::Internal(telegram_request_error_message(&err)))?;
+    let status = response.status();
+    let body = aether_http::read_response_bytes_with_limit(response, MAX_PUSH_RESPONSE_BYTES)
+        .await
+        .map_err(|err| GatewayError::Internal(telegram_response_body_error_message(&err)))?;
+    let body = String::from_utf8_lossy(&body);
+    if !status.is_success() {
+        return Err(GatewayError::Internal(telegram_api_failure_message(
+            method, status, &body,
+        )));
+    }
+    serde_json::from_str::<Value>(&body)
+        .map_err(|_| GatewayError::Internal("Telegram 响应解析失败".to_string()))
+}
+
+/// Render a title/body pair through the configured template. Per-user
+/// notifications reuse the administrator's template so both channels read alike.
+pub(crate) fn render_telegram_notification_text(
+    template: Option<&str>,
+    title: &str,
+    markdown_body: &str,
+) -> Result<String, GatewayError> {
+    render_telegram_message(template, title, markdown_body)
+}
+
+/// Human-transcribable one-time code. The alphabet drops `I`, `O`, `0` and `1`
+/// so a code read off a screen cannot be mistyped into a different valid code.
+pub(crate) fn generate_user_telegram_link_code() -> String {
+    let alphabet = USER_TELEGRAM_LINK_CODE_ALPHABET.as_bytes();
+    let mut entropy = Uuid::new_v4().as_u128();
+    let mut code = String::with_capacity(USER_TELEGRAM_LINK_CODE_LEN);
+    while code.len() < USER_TELEGRAM_LINK_CODE_LEN {
+        // Consume the low five bits at a time: an unbiased slice of the 122
+        // random bits a v4 UUID carries, with no modulo bias.
+        let index = (entropy & 0b1_1111) as usize;
+        code.push(alphabet[index] as char);
+        entropy >>= 5;
+    }
+    code
 }
 
 pub(crate) async fn send_telegram_push(
@@ -156,58 +404,89 @@ pub(crate) async fn send_telegram_push(
     let client = build_pinned_telegram_client()
         .await
         .map_err(|message| GatewayError::Internal(message.to_string()))?;
-    let url = format!("{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage");
+    post_telegram_message(&client, bot_token, chat_id, &rendered).await
+}
 
-    let response = client
-        .post(&url)
-        .json(&json!({
-            "chat_id": chat_id,
-            "text": markdown_to_telegram_html(&rendered),
-            "parse_mode": "HTML",
-            "disable_web_page_preview": true,
-        }))
-        .send()
-        .await
-        .map_err(|err| GatewayError::Internal(telegram_request_error_message(&err)))?;
-    let status = response.status();
-    let body = aether_http::read_response_bytes_with_limit(response, MAX_PUSH_RESPONSE_BYTES)
-        .await
-        .map_err(|err| GatewayError::Internal(telegram_response_body_error_message(&err)))?;
-    let text = String::from_utf8_lossy(&body);
-    if status.is_success() {
-        return Ok(());
+/// Send one already-rendered message to an explicit chat. Unlike
+/// `send_telegram_push` this does not read any configuration: per-user
+/// notifications and webhook replies both know their destination already, and
+/// neither may borrow the administrator's broadcast chat.
+pub(crate) async fn send_telegram_text(
+    bot_token: &str,
+    chat_id: &str,
+    text: &str,
+) -> Result<(), GatewayError> {
+    if !is_safe_telegram_bot_token(bot_token) {
+        return Err(GatewayError::Internal(
+            "Telegram Bot Token 格式无效".to_string(),
+        ));
     }
+    if !is_safe_telegram_chat_id(chat_id) {
+        return Err(GatewayError::Internal(
+            "Telegram Chat ID 格式无效".to_string(),
+        ));
+    }
+    validate_telegram_field("text", text, MAX_TELEGRAM_BODY_BYTES)?;
+    let rendered = truncate_telegram_message(text.to_string());
+    let client = build_pinned_telegram_client()
+        .await
+        .map_err(|message| GatewayError::Internal(message.to_string()))?;
+    post_telegram_message(&client, bot_token, chat_id, &rendered).await
+}
 
-    // Telegram discards the whole message when HTML parsing fails, so a single
-    // stray character in a hand-written template would otherwise kill the
-    // channel for every future notification. Retry once as plain text.
-    if status == http::StatusCode::BAD_REQUEST && telegram_error_is_parse_failure(&text) {
+/// One `sendMessage` round trip with the markup fallback folded into a loop, so
+/// the retry needs no boxing and no duplicated response handling.
+async fn post_telegram_message(
+    client: &reqwest::Client,
+    bot_token: &str,
+    chat_id: &str,
+    rendered: &str,
+) -> Result<(), GatewayError> {
+    let url = format!("{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage");
+    let html_payload = json!({
+        "chat_id": chat_id,
+        "text": markdown_to_telegram_html(rendered),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": true,
+    });
+    let plain_payload = json!({
+        "chat_id": chat_id,
+        "text": strip_inline_markdown(rendered),
+        "disable_web_page_preview": true,
+    });
+    let mut payload = &html_payload;
+    let mut html = true;
+    loop {
         let response = client
             .post(&url)
-            .json(&json!({
-                "chat_id": chat_id,
-                "text": strip_inline_markdown(&rendered),
-                "disable_web_page_preview": true,
-            }))
+            .json(payload)
             .send()
             .await
             .map_err(|err| GatewayError::Internal(telegram_request_error_message(&err)))?;
-        let retry_status = response.status();
-        let retry_body =
-            aether_http::read_response_bytes_with_limit(response, MAX_PUSH_RESPONSE_BYTES)
-                .await
-                .map_err(|err| {
-                    GatewayError::Internal(telegram_response_body_error_message(&err))
-                })?;
-        let retry_text = String::from_utf8_lossy(&retry_body);
-        if retry_status.is_success() {
+        let status = response.status();
+        let body = aether_http::read_response_bytes_with_limit(response, MAX_PUSH_RESPONSE_BYTES)
+            .await
+            .map_err(|err| GatewayError::Internal(telegram_response_body_error_message(&err)))?;
+        let body = String::from_utf8_lossy(&body);
+        if status.is_success() {
             return Ok(());
         }
-        let detail = telegram_failure_message(retry_status, &retry_text);
-        return Err(GatewayError::Internal(detail));
+
+        // Telegram discards the whole message when HTML parsing fails, so a
+        // single stray character in a hand-written template would otherwise kill
+        // the channel for every future notification. Retry once as plain text.
+        if html
+            && status == http::StatusCode::BAD_REQUEST
+            && telegram_error_is_parse_failure(&body)
+        {
+            html = false;
+            payload = &plain_payload;
+            continue;
+        }
+        return Err(GatewayError::Internal(telegram_failure_message(
+            status, &body,
+        )));
     }
-    let detail = telegram_failure_message(status, &text);
-    Err(GatewayError::Internal(detail))
 }
 
 /// Build the production client with the API hostname pinned to one validated
@@ -447,19 +726,29 @@ fn telegram_error_is_parse_failure(body: &str) -> bool {
 /// Surface only Telegram's human-readable `description`, never the raw body:
 /// parse errors echo the request path, which carries the bot token.
 fn telegram_failure_message(status: http::StatusCode, body: &str) -> String {
-    if let Ok(payload) = serde_json::from_str::<Value>(body) {
-        if let Some(description) = payload.get("description").and_then(|value| value.as_str()) {
-            let description = description
-                .strip_prefix("Bad Request:")
-                .unwrap_or(description)
-                .trim();
-            if !description.is_empty() {
-                let description: String = description.chars().take(200).collect();
-                return format!("Telegram 推送失败: {description}");
-            }
-        }
+    if let Some(description) = telegram_error_description(body) {
+        return format!("Telegram 推送失败: {description}");
     }
     format!("Telegram 返回 HTTP {status}")
+}
+
+fn telegram_api_failure_message(method: &str, status: http::StatusCode, body: &str) -> String {
+    if let Some(description) = telegram_error_description(body) {
+        return format!("Telegram {method} 失败: {description}");
+    }
+    format!("Telegram {method} 返回 HTTP {status}")
+}
+
+/// Telegram's `description` is the only part of an error body that is safe to
+/// show: the rest echoes the request path, which carries the bot token.
+fn telegram_error_description(body: &str) -> Option<String> {
+    let payload = serde_json::from_str::<Value>(body).ok()?;
+    let description = payload.get("description").and_then(|value| value.as_str())?;
+    let description = description
+        .strip_prefix("Bad Request:")
+        .unwrap_or(description)
+        .trim();
+    (!description.is_empty()).then(|| description.chars().take(200).collect())
 }
 
 fn telegram_request_error_message(error: &reqwest::Error) -> String {
@@ -495,9 +784,12 @@ fn telegram_reqwest_error_kind(error: &reqwest::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_safe_telegram_bot_token, is_safe_telegram_chat_id, markdown_to_telegram_html,
-        render_telegram_message, strip_inline_markdown, telegram_error_is_parse_failure,
-        telegram_failure_message, truncate_telegram_message,
+        generate_user_telegram_link_code, is_safe_telegram_bot_token, is_safe_telegram_chat_id,
+        markdown_to_telegram_html, normalize_telegram_bot_username,
+        normalize_telegram_public_base_url, render_telegram_message, strip_inline_markdown,
+        telegram_api_failure_message, telegram_error_is_parse_failure, telegram_failure_message,
+        telegram_webhook_url, truncate_telegram_message, USER_TELEGRAM_LINK_CODE_ALPHABET,
+        USER_TELEGRAM_LINK_CODE_LEN,
     };
 
     #[test]
@@ -654,5 +946,87 @@ mod tests {
         let message = telegram_failure_message(http::StatusCode::BAD_GATEWAY, "<html>oops</html>");
         assert_eq!(message, "Telegram 返回 HTTP 502 Bad Gateway");
         assert!(!message.contains("html"));
+    }
+
+    #[test]
+    fn telegram_api_failure_message_names_the_method() {
+        let message = telegram_api_failure_message(
+            "setWebhook",
+            http::StatusCode::BAD_REQUEST,
+            r#"{"ok":false,"description":"Bad Request: bad webhook: HTTPS url expected"}"#,
+        );
+        assert_eq!(message, "Telegram setWebhook 失败: bad webhook: HTTPS url expected");
+    }
+
+    #[test]
+    fn telegram_public_base_url_accepts_https_and_drops_the_trailing_slash() {
+        assert_eq!(
+            normalize_telegram_public_base_url(" https://ae.example.com/ ").expect("valid"),
+            "https://ae.example.com"
+        );
+        assert_eq!(
+            normalize_telegram_public_base_url("").expect("blank stays blank"),
+            ""
+        );
+    }
+
+    #[test]
+    fn telegram_public_base_url_rejects_unreachable_or_unsafe_values() {
+        for raw in [
+            "http://ae.example.com",
+            "ae.example.com",
+            "https://user:secret@ae.example.com",
+            "https://127.0.0.1",
+            "https://localhost:8443",
+            "https://[::1]",
+            "not a url",
+        ] {
+            assert!(
+                normalize_telegram_public_base_url(raw).is_err(),
+                "{raw} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn telegram_webhook_url_appends_the_receiver_path() {
+        assert_eq!(
+            telegram_webhook_url("https://ae.example.com"),
+            "https://ae.example.com/api/telegram/webhook"
+        );
+    }
+
+    #[test]
+    fn telegram_bot_username_accepts_bare_and_prefixed_handles() {
+        assert_eq!(
+            normalize_telegram_bot_username(" @moonlight_bot "),
+            Some("moonlight_bot".to_string())
+        );
+        assert_eq!(
+            normalize_telegram_bot_username("moonlight_bot"),
+            Some("moonlight_bot".to_string())
+        );
+        for raw in ["", "@", "@moon light", "@1bot", "@机器人", &"a".repeat(65)] {
+            assert_eq!(normalize_telegram_bot_username(raw), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn user_telegram_link_code_uses_only_unambiguous_characters() {
+        for _ in 0..200 {
+            let code = generate_user_telegram_link_code();
+            assert_eq!(code.len(), USER_TELEGRAM_LINK_CODE_LEN);
+            assert!(code
+                .bytes()
+                .all(|byte| USER_TELEGRAM_LINK_CODE_ALPHABET.as_bytes().contains(&byte)));
+        }
+    }
+
+    #[test]
+    fn user_telegram_link_codes_do_not_repeat_across_a_large_sample() {
+        let codes = (0..500)
+            .map(|_| generate_user_telegram_link_code())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(codes.len(), 500);
     }
 }

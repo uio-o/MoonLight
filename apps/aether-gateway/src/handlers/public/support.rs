@@ -48,6 +48,8 @@ mod support_monitoring;
 mod support_oauth;
 #[path = "support/payment.rs"]
 mod support_payment;
+#[path = "support/telegram_user.rs"]
+mod support_telegram_user;
 #[path = "support/test_connection.rs"]
 mod support_test_connection;
 #[path = "support/user_me.rs"]
@@ -95,6 +97,7 @@ use self::support_models::{
 use self::support_monitoring::maybe_build_local_user_monitoring_response;
 use self::support_oauth::maybe_build_local_oauth_response;
 use self::support_payment::maybe_build_local_payment_callback_response;
+use self::support_telegram_user::maybe_build_local_telegram_user_response;
 use self::support_test_connection::maybe_build_local_test_connection_response;
 use self::support_user_me::maybe_build_local_users_me_response;
 pub(crate) use self::support_vscodex::vscodex_ws_proxy;
@@ -258,6 +261,16 @@ async fn build_local_public_support_response(
             return Some(response);
         }
         return Some(build_unhandled_public_support_response(request_context));
+    }
+
+    if decision.route_family.as_deref() == Some("telegram_user") {
+        return maybe_build_local_telegram_user_response(
+            state,
+            request_context,
+            headers,
+            request_body,
+        )
+        .await;
     }
 
     if decision.route_family.as_deref() == Some("users_me") {

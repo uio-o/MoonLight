@@ -503,6 +503,8 @@ export const messages = {
     'breadcrumb.routingConfig': '调度策略配置',
     'modules.telegram.chatIdHint': "通知目标的会话 ID。个人会话为正数，群组为 -100 开头的负数；给机器人发一条消息后访问 https://api.telegram.org/bot<token>/getUpdates 可查看。",
     'modules.telegram.botTokenHint': "在 Telegram 中找 @BotFather，发送 /newbot 创建机器人后获得的凭证，形如 123456789:AAH...。",
+    'modules.telegram.botUsernameHint': "选填。形如 @moonlight_bot，用于给用户生成一键绑定链接；留空时用户需手动发送 /start 绑定码。",
+    'modules.telegram.publicUrlHint': "Telegram 需要从公网回调本站，填反向代理对外的 https 地址，例如 https://ae.example.com。不要带末尾斜杠。",
   },
   'en-US': {
     ...uiMessages['en-US'],
@@ -1003,6 +1005,8 @@ export const messages = {
     'breadcrumb.routingConfig': 'Routing profile',
     'modules.telegram.chatIdHint': "Chat ID of the notification target. Personal chats are positive; groups start with -100. Send the bot a message and check https://api.telegram.org/bot<token>/getUpdates.",
     'modules.telegram.botTokenHint': "Credential from @BotFather on Telegram after sending /newbot, for example 123456789:AAH....",
+    'modules.telegram.botUsernameHint': "Optional. For example @moonlight_bot; used to build a one-click binding link for users. When left empty, users send /start <code> manually.",
+    'modules.telegram.publicUrlHint': "Telegram must call back into this instance from the public internet. Enter the external https address of the reverse proxy, for example https://ae.example.com, without a trailing slash.",
   },
 } as const
 

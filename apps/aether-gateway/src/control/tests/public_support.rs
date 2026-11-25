@@ -1124,6 +1124,47 @@ fn classifies_oauth_user_bind_token_route() {
 }
 
 #[test]
+fn classifies_user_telegram_binding_route_for_every_supported_method() {
+    for (method, expected) in [
+        (http::Method::GET, "binding"),
+        (http::Method::POST, "binding"),
+        (http::Method::DELETE, "binding"),
+    ] {
+        let headers = headers(&[]);
+        let uri: Uri = "/api/user/telegram/binding"
+            .parse()
+            .expect("uri should parse");
+        let decision =
+            classify_control_route(&method, &uri, &headers).expect("route should classify");
+
+        assert_eq!(decision.route_class.as_deref(), Some("public_support"));
+        assert_eq!(decision.route_family.as_deref(), Some("telegram_user"));
+        assert_eq!(decision.route_kind.as_deref(), Some(expected));
+        assert_eq!(
+            decision.auth_endpoint_signature.as_deref(),
+            Some("user:telegram")
+        );
+        assert!(!decision.is_execution_runtime_candidate());
+    }
+}
+
+#[test]
+fn classifies_telegram_webhook_route_without_a_user_credential() {
+    let headers = headers(&[]);
+    let uri: Uri = "/api/telegram/webhook".parse().expect("uri should parse");
+    let decision =
+        classify_control_route(&http::Method::POST, &uri, &headers).expect("route should classify");
+
+    assert_eq!(decision.route_class.as_deref(), Some("public_support"));
+    assert_eq!(decision.route_family.as_deref(), Some("telegram_user"));
+    assert_eq!(decision.route_kind.as_deref(), Some("webhook"));
+    assert_eq!(
+        decision.auth_endpoint_signature.as_deref(),
+        Some("public:telegram_webhook")
+    );
+}
+
+#[test]
 fn classifies_capabilities_list_as_public_support_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/capabilities".parse().expect("uri should parse");

@@ -434,6 +434,103 @@
           </div>
         </Card>
 
+        <!-- Telegram 绑定 -->
+        <Card class="p-6">
+          <h3 class="text-lg font-medium text-foreground mb-4">
+            {{ t('ui.telegramBinding') }}
+          </h3>
+
+          <p class="text-sm text-muted-foreground">
+            {{ t('ui.telegramBindingDescription') }}
+          </p>
+
+          <div class="mt-4 space-y-4">
+            <div
+              v-if="telegramBindingLoading"
+              class="text-sm text-muted-foreground"
+            >
+              {{ t('common.loading') }}
+            </div>
+
+            <div
+              v-else-if="telegramBindingBlockedReason"
+              class="text-sm text-muted-foreground"
+            >
+              {{ telegramBindingBlockedReason }}
+            </div>
+
+            <template v-else>
+              <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-4">
+                <div class="min-w-0">
+                  <div class="text-sm font-medium truncate">
+                    {{ telegramBinding.bound ? (telegramBinding.chat_title || telegramBinding.username || 'Telegram') : t('ui.telegramUnbound') }}
+                  </div>
+                  <div class="text-xs text-muted-foreground">
+                    {{ telegramBindingDetail }}
+                  </div>
+                </div>
+                <Badge :variant="telegramBinding.bound ? 'default' : 'secondary'">
+                  {{ telegramBinding.bound ? t('ui.bound') : t('ui.notBound') }}
+                </Badge>
+              </div>
+
+              <div
+                v-if="telegramBindCode"
+                class="space-y-2 rounded-lg border border-dashed border-border p-4"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <span class="font-mono text-lg tracking-widest">{{ telegramBindCode.code }}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="telegramActionLoading"
+                    @click="copyToClipboard(telegramBindCode.code)"
+                  >
+                    {{ t('ui.telegramCopyBindCode') }}
+                  </Button>
+                </div>
+                <p class="text-xs text-muted-foreground">
+                  {{ t('ui.telegramBindingExpiresAt', { time: formatDateTime(telegramBindCode.expires_at) }) }}
+                </p>
+                <p
+                  v-if="!telegramBindCode.webhook_ready"
+                  class="text-xs text-destructive"
+                >
+                  {{ t('ui.telegramWebhookNotReady') }}
+                </p>
+                <a
+                  v-if="telegramBindCode.deep_link"
+                  :href="telegramBindCode.deep_link"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex text-sm text-primary hover:underline"
+                >
+                  {{ t('ui.telegramOpenInTelegram') }}
+                </a>
+              </div>
+
+              <div class="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  :disabled="telegramActionLoading"
+                  @click="handleGenerateTelegramBindCode"
+                >
+                  {{ telegramBindCode ? t('ui.telegramRegenerateBindCode') : t('ui.telegramGenerateBindCode') }}
+                </Button>
+                <Button
+                  v-if="telegramBinding.bound"
+                  variant="outline"
+                  size="sm"
+                  :disabled="telegramActionLoading"
+                  @click="handleTelegramUnbind"
+                >
+                  {{ t('ui.telegramUnbind') }}
+                </Button>
+              </div>
+            </template>
+          </div>
+        </Card>
+
         <!-- 偏好设置 -->
         <Card class="p-6">
           <h3 class="text-lg font-medium text-foreground mb-4">
@@ -684,8 +781,10 @@ import { meApi, type Profile } from '@/api/me'
 import { type UserSession, formatSessionMeta } from '@/types/session'
 import { authApi } from '@/api/auth'
 import { oauthApi, type OAuthLinkInfo, type OAuthProviderInfo } from '@/api/oauth'
+import { telegramApi, type TelegramBindingCode, type TelegramBindingStatus } from '@/api/telegram'
 import { getOAuthIcon } from '@/utils/oauth-icons'
 import { useDarkMode, type ThemeMode } from '@/composables/useDarkMode'
+import { useClipboard } from '@/composables/useClipboard'
 import {
   getPasswordPolicyHint,
   getPasswordPolicyPlaceholder,
@@ -706,7 +805,7 @@ import SelectContent from '@/components/ui/select-content.vue'
 import SelectItem from '@/components/ui/select-item.vue'
 import Switch from '@/components/ui/switch.vue'
 import { useToast } from '@/composables/useToast'
-import { formatCurrency, formatDate } from '@/utils/format'
+import { formatCurrency, formatDate, formatDateTime } from '@/utils/format'
 import { log } from '@/utils/logger'
 import { safeExternalHttpsUrl } from '@/utils/navigationSecurity'
 import { getErrorMessage, getErrorStatus } from '@/types/api-error'
@@ -720,6 +819,7 @@ const authStore = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const { success, error: showError } = useToast()
+const { copyToClipboard } = useClipboard()
 const { setThemeMode } = useDarkMode()
 const { t, locale, setLocale } = useI18n()
 
@@ -779,6 +879,15 @@ const oauthUnavailable = ref(false)
 const oauthActionLoading = ref(false)
 const oauthLinks = ref<OAuthLinkInfo[]>([])
 const bindableProviders = ref<OAuthProviderInfo[]>([])
+const telegramBindingLoading = ref(false)
+const telegramActionLoading = ref(false)
+const telegramBinding = ref<TelegramBindingStatus>({
+  module_enabled: false,
+  bound: false,
+  notification_count: 0,
+})
+const telegramBindCode = ref<TelegramBindingCode | null>(null)
+const telegramBindingBlockedReason = ref('')
 const emailConfigured = ref(false) // 系统是否配置了邮箱服务
 
 // 原始值，用于检测是否有修改
@@ -787,6 +896,21 @@ const originalPreferencesForm = ref({ avatar_url: '', bio: '' })
 const originalFeatureSettingsForm = ref({ ...featureSettingsForm.value })
 
 // 检测基本信息是否有修改
+const telegramBindingDetail = computed(() => {
+  if (!telegramBinding.value.bound) return t('ui.telegramBindingPending')
+  const parts: string[] = []
+  if (telegramBinding.value.verified_at) {
+    parts.push(t('ui.telegramBindingExpiresAt', { time: formatDateTime(telegramBinding.value.verified_at) }))
+  }
+  if (telegramBinding.value.last_notified_at) {
+    parts.push(t('ui.telegramLastNotifiedAt', { time: formatDateTime(telegramBinding.value.last_notified_at) }))
+  }
+  if (telegramBinding.value.notification_count > 0) {
+    parts.push(t('ui.telegramNotificationCount', { count: telegramBinding.value.notification_count }))
+  }
+  return parts.join(' · ')
+})
+
 const hasProfileChanges = computed(() => {
   return (
     profileForm.value.username !== originalProfileForm.value.username ||
@@ -851,6 +975,7 @@ onMounted(async () => {
     loadSessions(),
     loadEmailConfigured(),
     profilePromise.then(() => loadOAuthBindings()),
+    profilePromise.then(() => loadTelegramBinding()),
   ])
 })
 
@@ -1017,6 +1142,77 @@ async function handleUnbind(providerType: string) {
     showError(getErrorMessage(err, '解绑失败'))
   } finally {
     oauthActionLoading.value = false
+  }
+}
+
+async function loadTelegramBinding() {
+  telegramBindingLoading.value = true
+  try {
+    const status = await telegramApi.getBinding()
+    telegramBinding.value = status
+    telegramBindingBlockedReason.value = telegramBindingBlockedLabel(status)
+    // A code minted before the page reloaded is still redeemable, so keep showing
+    // it instead of making the user generate a new one.
+    telegramBindCode.value = status.pending_code
+      ? {
+          code: status.pending_code,
+          expires_at: status.pending_expires_at,
+          bot_username: status.bot_username,
+          deep_link: status.bot_username
+            ? `https://t.me/${status.bot_username}?start=${status.pending_code}`
+            : null,
+          webhook_ready: true,
+        }
+      : null
+  } catch (err: unknown) {
+    const status = getErrorStatus(err)
+    if (status === 400) {
+      telegramBindingBlockedReason.value = t('ui.telegramPublicUrlMissing')
+      return
+    }
+    log.error('加载 Telegram 绑定信息失败:', err)
+    telegramBindingBlockedReason.value = t('ui.telegramBindingUnavailable')
+  } finally {
+    telegramBindingLoading.value = false
+  }
+}
+
+function telegramBindingBlockedLabel(status: TelegramBindingStatus) {
+  // Only the administrator's switches can block a binding; a missing bot username
+  // just removes the one-click link.
+  return status.module_enabled ? '' : t('ui.telegramBindingDisabledHint')
+}
+
+async function handleGenerateTelegramBindCode() {
+  telegramActionLoading.value = true
+  try {
+    const code = await telegramApi.createBindingCode()
+    telegramBindCode.value = code
+    telegramBindingBlockedReason.value = ''
+  } catch (err: unknown) {
+    const status = getErrorStatus(err)
+    if (status === 400) {
+      telegramBindingBlockedReason.value = t('ui.telegramPublicUrlMissing')
+      telegramBindCode.value = null
+      return
+    }
+    showError(getErrorMessage(err, t('ui.telegramBindingUnavailable')))
+  } finally {
+    telegramActionLoading.value = false
+  }
+}
+
+async function handleTelegramUnbind() {
+  telegramActionLoading.value = true
+  try {
+    await telegramApi.unbind()
+    telegramBindCode.value = null
+    success(t('ui.telegramUnbind'))
+    await loadTelegramBinding()
+  } catch (err) {
+    showError(getErrorMessage(err, t('ui.telegramUnbind')))
+  } finally {
+    telegramActionLoading.value = false
   }
 }
 

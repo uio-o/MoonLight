@@ -75,6 +75,7 @@ struct ImportantNotificationItemConfig {
     markdown_template: Option<String>,
     text_template: Option<String>,
     user_email_enabled: bool,
+    user_telegram_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -219,6 +220,35 @@ pub(crate) async fn send_user_important_notification_email(
             ))
         }
     }
+}
+
+/// Reads the notification config once and hands back the item-scoped, template-
+/// rendered notification when this item is enabled for per-user Telegram.
+///
+/// Returns `Ok(None)` for every reason a send should not be attempted — module
+/// off, unknown item, item off, or the item's `user_telegram_enabled` flag off —
+/// so the caller can treat "nothing to do" without inspecting the config.
+pub(crate) async fn resolve_user_telegram_notification(
+    state: &AppState,
+    item_key: &str,
+    notification: ImportantNotification,
+    variables: &[(&str, String)],
+) -> Result<Option<ImportantNotification>, GatewayError> {
+    let config = read_important_notification_config(state).await?;
+    if !config.module_enabled {
+        return Ok(None);
+    }
+    let Some(item) = find_notification_item(&config, item_key) else {
+        return Ok(None);
+    };
+    if !item.enabled || !item.user_telegram_enabled {
+        return Ok(None);
+    }
+    Ok(Some(apply_notification_item_template(
+        Some(item),
+        notification,
+        variables,
+    )))
 }
 
 async fn important_notification_has_configured_channel(
@@ -501,6 +531,10 @@ fn parse_notification_item(value: &Value) -> Option<ImportantNotificationItemCon
             .get("user_email_enabled")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        user_telegram_enabled: item
+            .get("user_telegram_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -515,6 +549,7 @@ fn default_notification_items() -> Vec<ImportantNotificationItemConfig> {
             markdown_template: None,
             text_template: None,
             user_email_enabled: false,
+            user_telegram_enabled: false,
         },
         ImportantNotificationItemConfig {
             key: "provider_pool_abnormal".to_string(),
@@ -527,6 +562,7 @@ fn default_notification_items() -> Vec<ImportantNotificationItemConfig> {
             ),
             text_template: Some("号池 {provider_name} 出现异常，请检查服务状态。".to_string()),
             user_email_enabled: false,
+            user_telegram_enabled: false,
         },
         ImportantNotificationItemConfig {
             key: "user_balance_low".to_string(),
@@ -537,6 +573,7 @@ fn default_notification_items() -> Vec<ImportantNotificationItemConfig> {
             markdown_template: Some("你的账户余额已低于提醒阈值，请及时处理。".to_string()),
             text_template: Some("你的账户余额已低于提醒阈值，请及时处理。".to_string()),
             user_email_enabled: true,
+            user_telegram_enabled: true,
         },
     ]
 }
@@ -840,7 +877,7 @@ async fn maybe_send_telegram_notification(
     }
 }
 
-fn single_report(
+pub(crate) fn single_report(
     channel: &'static str,
     success: bool,
     message: impl Into<String>,
@@ -997,7 +1034,8 @@ mod tests {
                 "channel": "email",
                 "title_template": "余额提醒",
                 "markdown_template": "{user_email}: {balance}",
-                "user_email_enabled": true
+                "user_email_enabled": true,
+                "user_telegram_enabled": true
             }
         ])));
 
@@ -1008,6 +1046,16 @@ mod tests {
             Some(ImportantNotificationChannelFilter::Email)
         );
         assert!(items[0].user_email_enabled);
+        assert!(items[0].user_telegram_enabled);
+    }
+
+    #[test]
+    fn parse_notification_items_defaults_user_telegram_flag_off() {
+        let items = parse_notification_items(Some(&json!([{ "key": "provider_quota_alert" }])));
+
+        assert_eq!(items.len(), 1);
+        assert!(!items[0].user_email_enabled);
+        assert!(!items[0].user_telegram_enabled);
     }
 
     #[test]

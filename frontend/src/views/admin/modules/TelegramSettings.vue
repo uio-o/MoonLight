@@ -75,6 +75,47 @@
                 {{ t('modules.telegram.chatIdHint') }}
               </p>
             </div>
+
+            <div>
+              <Label
+                for="telegram-bot-username"
+                class="block text-sm font-medium"
+              >
+                {{ t('ui.botUsername') }}
+              </Label>
+              <Input
+                id="telegram-bot-username"
+                v-model="botUsernameInput"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="@moonlight_bot"
+                class="mt-1"
+              />
+              <p class="mt-1 text-xs text-muted-foreground">
+                {{ t('modules.telegram.botUsernameHint') }}
+              </p>
+            </div>
+
+            <div class="lg:col-span-2">
+              <Label
+                for="telegram-public-url"
+                class="block text-sm font-medium"
+              >
+                {{ t('ui.externalAccessUrl') }}
+              </Label>
+              <Input
+                id="telegram-public-url"
+                v-model="publicUrlInput"
+                type="url"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="https://ae.example.com"
+                class="mt-1"
+              />
+              <p class="mt-1 text-xs text-muted-foreground">
+                {{ t('modules.telegram.publicUrlHint') }}
+              </p>
+            </div>
           </div>
         </div>
       </CardSection>
@@ -161,6 +202,8 @@ const CONFIG_KEYS = {
   enabled: 'module.telegram_push.enabled',
   bot_token: 'module.telegram_push.bot_token',
   chat_id: 'module.telegram_push.chat_id',
+  bot_username: 'module.telegram_push.bot_username',
+  public_url: 'module.telegram_push.public_url',
   template: 'module.telegram_push.template',
 } as const
 
@@ -173,6 +216,8 @@ const botTokenIsSet = ref(false)
 const botTokenInput = ref('')
 const chatIdIsSet = ref(false)
 const chatIdInput = ref('')
+const botUsernameInput = ref('')
+const publicUrlInput = ref('')
 const templateInput = ref('')
 const lastTestResult = ref<Array<{ channel: string; success: boolean; message: string }>>([])
 
@@ -193,6 +238,8 @@ async function loadConfig() {
     const botToken = configsByKey.get(CONFIG_KEYS.bot_token)
     const chatId = configsByKey.get(CONFIG_KEYS.chat_id)
     const template = configsByKey.get(CONFIG_KEYS.template)
+    const botUsername = configsByKey.get(CONFIG_KEYS.bot_username)
+    const publicUrl = configsByKey.get(CONFIG_KEYS.public_url)
 
     enabled.value = moduleStatus.enabled === true
     botTokenIsSet.value = botToken?.is_set === true
@@ -200,6 +247,8 @@ async function loadConfig() {
     chatIdIsSet.value = typeof chatId?.value === 'string' && chatId.value.trim() !== ''
     chatIdInput.value = ''
     templateInput.value = typeof template?.value === 'string' ? template.value : ''
+    botUsernameInput.value = typeof botUsername?.value === 'string' ? botUsername.value : ''
+    publicUrlInput.value = typeof publicUrl?.value === 'string' ? publicUrl.value : ''
   } catch (err) {
     error(parseApiError(err, t('ui.failedToLoadTelegramSettings')))
     log.error('加载 Telegram 推送配置失败:', err)
@@ -212,6 +261,8 @@ async function saveConfig() {
     const updates: Array<Promise<unknown>> = [
       adminApi.updateSystemConfig(CONFIG_KEYS.chat_id, chatIdInput.value.trim(), 'Telegram Chat ID'),
       adminApi.updateSystemConfig(CONFIG_KEYS.template, templateInput.value, 'Telegram 推送模板'),
+      adminApi.updateSystemConfig(CONFIG_KEYS.bot_username, botUsernameInput.value.trim(), 'Telegram Bot Username'),
+      adminApi.updateSystemConfig(CONFIG_KEYS.public_url, publicUrlInput.value.trim(), 'Telegram 外部访问地址'),
     ]
     const trimmedToken = botTokenInput.value.trim()
     if (trimmedToken) {

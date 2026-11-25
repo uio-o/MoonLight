@@ -430,6 +430,8 @@ impl GatewayDataState {
                 routing_group_writer: None,
                 usage_reader: None,
                 usage_writer: None,
+                user_telegram_binding_reader: None,
+                user_telegram_binding_writer: None,
                 user_reader: None,
                 user_preferences: None,
                 usage_worker_queue: None,
@@ -504,6 +506,8 @@ impl GatewayDataState {
         let routing_group_writer = backends.write().routing_groups();
         let usage_reader = backends.read().usage();
         let usage_writer = backends.write().usage();
+        let user_telegram_binding_reader = backends.read().user_telegram_bindings();
+        let user_telegram_binding_writer = backends.write().user_telegram_bindings();
         let user_reader = backends.read().users();
         let usage_worker_queue = None;
         let video_task_reader = backends.read().video_tasks();
@@ -547,6 +551,8 @@ impl GatewayDataState {
             routing_group_writer,
             usage_reader,
             usage_writer,
+            user_telegram_binding_reader,
+            user_telegram_binding_writer,
             user_reader,
             user_preferences: None,
             usage_worker_queue,
@@ -761,6 +767,14 @@ impl GatewayDataState {
 
     pub(crate) fn has_usage_writer(&self) -> bool {
         self.usage_writer.is_some()
+    }
+
+    pub(crate) fn has_user_telegram_binding_reader(&self) -> bool {
+        self.user_telegram_binding_reader.is_some()
+    }
+
+    pub(crate) fn has_user_telegram_binding_writer(&self) -> bool {
+        self.user_telegram_binding_writer.is_some()
     }
 
     pub(crate) fn has_usage_counter_flush_backend(&self) -> bool {

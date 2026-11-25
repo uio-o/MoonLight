@@ -19,6 +19,7 @@ use crate::repository::quota::ProviderQuotaWriteRepository;
 use crate::repository::routing_profiles::RoutingGroupWriteRepository;
 use crate::repository::settlement::SettlementWriteRepository;
 use crate::repository::usage::UsageWriteRepository;
+use crate::repository::user_telegram_bindings::UserTelegramBindingWriteRepository;
 use crate::repository::video_tasks::VideoTaskWriteRepository;
 use crate::repository::wallet::WalletWriteRepository;
 
@@ -40,6 +41,7 @@ pub struct DataWriteRepositories {
     routing_groups: Option<Arc<dyn RoutingGroupWriteRepository>>,
     settlement: Option<Arc<dyn SettlementWriteRepository>>,
     usage: Option<Arc<dyn UsageWriteRepository>>,
+    user_telegram_bindings: Option<Arc<dyn UserTelegramBindingWriteRepository>>,
     video_tasks: Option<Arc<dyn VideoTaskWriteRepository>>,
     wallets: Option<Arc<dyn WalletWriteRepository>>,
 }
@@ -66,6 +68,10 @@ impl fmt::Debug for DataWriteRepositories {
             .field("has_routing_groups", &self.routing_groups.is_some())
             .field("has_settlement", &self.settlement.is_some())
             .field("has_usage", &self.usage.is_some())
+            .field(
+                "has_user_telegram_bindings",
+                &self.user_telegram_bindings.is_some(),
+            )
             .field("has_video_tasks", &self.video_tasks.is_some())
             .field("has_wallets", &self.wallets.is_some())
             .finish()
@@ -139,6 +145,10 @@ impl DataWriteRepositories {
         }
         if self.usage.is_none() {
             self.usage = Some(PostgresBackend::usage_write_repository(backend));
+        }
+        if self.user_telegram_bindings.is_none() {
+            self.user_telegram_bindings =
+                Some(PostgresBackend::user_telegram_binding_write_repository(backend));
         }
         if self.video_tasks.is_none() {
             self.video_tasks = Some(PostgresBackend::video_task_write_repository(backend));
@@ -218,6 +228,10 @@ impl DataWriteRepositories {
         self.settlement.clone()
     }
 
+    pub fn user_telegram_bindings(&self) -> Option<Arc<dyn UserTelegramBindingWriteRepository>> {
+        self.user_telegram_bindings.clone()
+    }
+
     pub fn video_tasks(&self) -> Option<Arc<dyn VideoTaskWriteRepository>> {
         self.video_tasks.clone()
     }
@@ -243,6 +257,7 @@ impl DataWriteRepositories {
             || self.routing_groups.is_some()
             || self.settlement.is_some()
             || self.usage.is_some()
+            || self.user_telegram_bindings.is_some()
             || self.video_tasks.is_some()
             || self.wallets.is_some()
     }
