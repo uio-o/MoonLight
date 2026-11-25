@@ -416,8 +416,8 @@ mod request_candidate_cache;
 mod routing_group_cache;
 mod routing_profiles;
 mod runtime;
-mod user_telegram_bindings;
 #[cfg(test)]
 mod testing;
 #[cfg(feature = "testkit")]
 pub(crate) mod testkit;
+mod user_telegram_bindings;

@@ -21,7 +21,7 @@ use crate::important_notification::{
 use crate::state::AppState;
 use crate::telegram_push::{
     generate_user_telegram_link_code, read_telegram_bot_token, read_telegram_bot_username,
-    read_telegram_push_config, read_telegram_public_base_url, read_telegram_webhook_secret,
+    read_telegram_public_base_url, read_telegram_push_config, read_telegram_webhook_secret,
     register_telegram_webhook, render_telegram_notification_text, send_telegram_text,
     telegram_push_module_enabled, USER_TELEGRAM_LINK_CODE_TTL_SECS,
 };
@@ -40,8 +40,7 @@ const TELEGRAM_WEBHOOK_SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
 const MAX_TELEGRAM_WEBHOOK_BODY_BYTES: usize = 64 * 1024;
 const TELEGRAM_BIND_INSTRUCTIONS: &str =
     "请打开 MoonLight 的「设置 → Telegram 绑定」页面，把页面上显示的绑定码发给我，格式：/start 绑定码";
-const TELEGRAM_BIND_SUCCESS_MESSAGE: &str =
-    "绑定成功！之后这个账号的通知会发送到这个会话。";
+const TELEGRAM_BIND_SUCCESS_MESSAGE: &str = "绑定成功！之后这个账号的通知会发送到这个会话。";
 const TELEGRAM_BIND_UNKNOWN_CODE_MESSAGE: &str =
     "绑定码无效或已过期，请在 MoonLight 的设置页面重新生成。";
 const TELEGRAM_BIND_CONSUMED_CODE_MESSAGE: &str =
@@ -200,9 +199,9 @@ async fn handle_binding_create(
             false
         }
     };
-    let deep_link = bot_username.as_deref().map(|username| {
-        format!("https://t.me/{username}?start={}", stored.link_code)
-    });
+    let deep_link = bot_username
+        .as_deref()
+        .map(|username| format!("https://t.me/{username}?start={}", stored.link_code));
     mark_sensitive_response_no_store(
         Json(json!({
             "code": stored.link_code,
@@ -263,7 +262,11 @@ pub(crate) async fn send_user_telegram_notification(
         .filter(|_| binding.is_verified())
         .map(str::to_string)
     else {
-        return Ok(single_report("user_telegram", false, "用户 Telegram 绑定未完成"));
+        return Ok(single_report(
+            "user_telegram",
+            false,
+            "用户 Telegram 绑定未完成",
+        ));
     };
     let Some(bot_token) = read_telegram_bot_token(state).await? else {
         return Ok(single_report(
@@ -398,8 +401,8 @@ async fn handle_telegram_webhook(
         Ok(None) => {
             // An unknown, expired or already-consumed code is indistinguishable
             // from here, so the reply cannot say which one it was.
-            let _ = send_telegram_text(&bot_token, &chat_id, TELEGRAM_BIND_UNKNOWN_CODE_MESSAGE)
-                .await;
+            let _ =
+                send_telegram_text(&bot_token, &chat_id, TELEGRAM_BIND_UNKNOWN_CODE_MESSAGE).await;
             return webhook_ack();
         }
         Err(err) => {
@@ -428,8 +431,8 @@ async fn handle_telegram_webhook(
             let _ = send_telegram_text(&bot_token, &chat_id, TELEGRAM_BIND_SUCCESS_MESSAGE).await;
         }
         Ok(None) => {
-            let _ = send_telegram_text(&bot_token, &chat_id, TELEGRAM_BIND_CONSUMED_CODE_MESSAGE)
-                .await;
+            let _ =
+                send_telegram_text(&bot_token, &chat_id, TELEGRAM_BIND_CONSUMED_CODE_MESSAGE).await;
         }
         Err(err) => {
             warn!(

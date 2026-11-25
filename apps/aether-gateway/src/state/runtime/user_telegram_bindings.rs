@@ -1,7 +1,7 @@
+use crate::{AppState, GatewayError};
 use aether_data::repository::user_telegram_bindings::{
     CreateUserTelegramBindingRecord, StoredUserTelegramBinding, VerifyUserTelegramBindingRecord,
 };
-use crate::{AppState, GatewayError};
 
 impl AppState {
     pub(crate) async fn find_user_telegram_binding(

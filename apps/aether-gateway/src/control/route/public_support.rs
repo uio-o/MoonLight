@@ -961,12 +961,13 @@ pub(super) fn classify_public_support_route(
             "public:system_catalog",
             false,
         ))
-    } else if matches!(normalized_path, "/api/user/telegram/binding" | "/api/user/telegram/binding/")
-        && matches!(
-            method,
-            &http::Method::GET | &http::Method::POST | &http::Method::DELETE
-        )
-    {
+    } else if matches!(
+        normalized_path,
+        "/api/user/telegram/binding" | "/api/user/telegram/binding/"
+    ) && matches!(
+        method,
+        &http::Method::GET | &http::Method::POST | &http::Method::DELETE
+    ) {
         Some(classified(
             "public_support",
             "telegram_user",
@@ -975,7 +976,10 @@ pub(super) fn classify_public_support_route(
             false,
         ))
     } else if method == http::Method::POST
-        && matches!(normalized_path, "/api/telegram/webhook" | "/api/telegram/webhook/")
+        && matches!(
+            normalized_path,
+            "/api/telegram/webhook" | "/api/telegram/webhook/"
+        )
     {
         // Telegram calls this directly from the public internet, so it carries no
         // user credential. The receiver authenticates the call itself with the

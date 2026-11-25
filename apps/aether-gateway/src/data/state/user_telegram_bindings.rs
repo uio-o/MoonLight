@@ -45,7 +45,10 @@ impl GatewayDataState {
         record: CreateUserTelegramBindingRecord,
     ) -> Result<Option<StoredUserTelegramBinding>, DataLayerError> {
         match &self.user_telegram_binding_writer {
-            Some(repository) => repository.create_user_telegram_binding(record).await.map(Some),
+            Some(repository) => repository
+                .create_user_telegram_binding(record)
+                .await
+                .map(Some),
             None => Ok(None),
         }
     }
@@ -65,7 +68,11 @@ impl GatewayDataState {
         user_id: &str,
     ) -> Result<bool, DataLayerError> {
         match &self.user_telegram_binding_writer {
-            Some(repository) => repository.delete_user_telegram_binding_for_user(user_id).await,
+            Some(repository) => {
+                repository
+                    .delete_user_telegram_binding_for_user(user_id)
+                    .await
+            }
             None => Ok(false),
         }
     }

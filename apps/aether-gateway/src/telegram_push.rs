@@ -174,9 +174,7 @@ pub(crate) fn normalize_telegram_public_base_url(raw: &str) -> Result<String, &'
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("Telegram 外部访问地址不能包含账号或密码");
     }
-    let host = parsed
-        .host_str()
-        .ok_or("Telegram 外部访问地址缺少主机名")?;
+    let host = parsed.host_str().ok_or("Telegram 外部访问地址缺少主机名")?;
     if host.eq_ignore_ascii_case("localhost")
         || matches!(host, "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]")
     {
@@ -205,12 +203,9 @@ pub(crate) async fn read_telegram_webhook_secret(
     let Some(value) = system_config_string(Some(&value)) else {
         return Ok(None);
     };
-    let value = decrypt_or_migrate_system_config_secret(
-        state,
-        TELEGRAM_PUSH_WEBHOOK_SECRET_KEY,
-        value,
-    )
-    .await?;
+    let value =
+        decrypt_or_migrate_system_config_secret(state, TELEGRAM_PUSH_WEBHOOK_SECRET_KEY, value)
+            .await?;
     let value = value.trim().to_string();
     if value.is_empty() {
         return Ok(None);
@@ -475,9 +470,7 @@ async fn post_telegram_message(
         // Telegram discards the whole message when HTML parsing fails, so a
         // single stray character in a hand-written template would otherwise kill
         // the channel for every future notification. Retry once as plain text.
-        if html
-            && status == http::StatusCode::BAD_REQUEST
-            && telegram_error_is_parse_failure(&body)
+        if html && status == http::StatusCode::BAD_REQUEST && telegram_error_is_parse_failure(&body)
         {
             html = false;
             payload = &plain_payload;
@@ -743,7 +736,9 @@ fn telegram_api_failure_message(method: &str, status: http::StatusCode, body: &s
 /// show: the rest echoes the request path, which carries the bot token.
 fn telegram_error_description(body: &str) -> Option<String> {
     let payload = serde_json::from_str::<Value>(body).ok()?;
-    let description = payload.get("description").and_then(|value| value.as_str())?;
+    let description = payload
+        .get("description")
+        .and_then(|value| value.as_str())?;
     let description = description
         .strip_prefix("Bad Request:")
         .unwrap_or(description)
@@ -955,7 +950,10 @@ mod tests {
             http::StatusCode::BAD_REQUEST,
             r#"{"ok":false,"description":"Bad Request: bad webhook: HTTPS url expected"}"#,
         );
-        assert_eq!(message, "Telegram setWebhook 失败: bad webhook: HTTPS url expected");
+        assert_eq!(
+            message,
+            "Telegram setWebhook 失败: bad webhook: HTTPS url expected"
+        );
     }
 
     #[test]
