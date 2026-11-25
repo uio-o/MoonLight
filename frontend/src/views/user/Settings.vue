@@ -900,7 +900,7 @@ const telegramBindingDetail = computed(() => {
   if (!telegramBinding.value.bound) return t('ui.telegramBindingPending')
   const parts: string[] = []
   if (telegramBinding.value.verified_at) {
-    parts.push(t('ui.telegramBindingExpiresAt', { time: formatDateTime(telegramBinding.value.verified_at) }))
+    parts.push(t('ui.telegramBoundAt', { time: formatDateTime(telegramBinding.value.verified_at) }))
   }
   if (telegramBinding.value.last_notified_at) {
     parts.push(t('ui.telegramLastNotifiedAt', { time: formatDateTime(telegramBinding.value.last_notified_at) }))
