@@ -13,6 +13,7 @@ use serde_json::json;
 const ADMIN_BILLING_DATA_UNAVAILABLE_DETAIL: &str = "Admin billing data unavailable";
 
 mod collectors;
+mod fx_rates;
 mod payments;
 mod plans;
 mod presets;
@@ -215,6 +216,9 @@ pub(crate) async fn maybe_build_local_admin_billing_response(
     if let Some(response) =
         provider_expenses::response(state, request_context, request_body).await?
     {
+        return Ok(Some(response));
+    }
+    if let Some(response) = fx_rates::response(state, request_context).await? {
         return Ok(Some(response));
     }
 

@@ -12,8 +12,10 @@ pub(super) fn classify_admin_basic_family_route(
         && matches!(
             finance_path,
             "/api/admin/billing/provider-accounts" | "/api/admin/billing/provider-expenses"
+                | "/api/admin/billing/fx-rates"
         ))
         || (method == http::Method::POST && finance_path == "/api/admin/billing/provider-expenses")
+        || (method == http::Method::POST && finance_path == "/api/admin/billing/fx-rates/refresh")
         || (method == http::Method::POST
             && finance_path
                 .strip_prefix("/api/admin/billing/provider-expenses/")
@@ -25,6 +27,10 @@ pub(super) fn classify_admin_basic_family_route(
             "billing_manage",
             if finance_path.ends_with("/provider-accounts") {
                 "provider_accounts"
+            } else if finance_path == "/api/admin/billing/fx-rates" {
+                "read_fx_rates"
+            } else if finance_path == "/api/admin/billing/fx-rates/refresh" {
+                "refresh_fx_rates"
             } else if method == http::Method::GET {
                 "provider_expenses"
             } else if finance_path.ends_with("/void") {

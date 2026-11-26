@@ -27,6 +27,9 @@ async fn postgres_provider_expense_ledger_migration_preserves_exact_sums_idempot
         kind: "recharge".into(),
         amount: "0.10000000".into(),
         currency: "USD".into(),
+        fx_rate_used: None,
+        amount_base: None,
+        base_currency: None,
         paid_at_unix_ms: 1000,
         period_start_unix_ms: None,
         period_end_unix_ms: None,
@@ -59,6 +62,9 @@ async fn postgres_provider_expense_ledger_migration_preserves_exact_sums_idempot
     cny.client_request_id = uuid::Uuid::new_v4().to_string();
     cny.currency = "CNY".into();
     cny.amount = "7.00000000".into();
+    cny.fx_rate_used = Some("7.20000000".into());
+    cny.amount_base = Some("0.97222222".into());
+    cny.base_currency = Some("USD".into());
     repository.create_provider_expense(&cny).await.unwrap();
     let query = ProviderExpenseQuery {
         from_unix_ms: 0,
@@ -76,6 +82,12 @@ async fn postgres_provider_expense_ledger_migration_preserves_exact_sums_idempot
     assert_eq!(page.totals[0].currency, "CNY");
     assert_eq!(page.totals[1].amount, "0.30000000");
     assert_eq!(page.totals[1].subscription_amount, "0.20000000");
+    // Only the CNY row carries a snapshot, so the converted rollup holds that
+    // one entry and the pre-snapshot USD rows stay out of it.
+    assert_eq!(page.base_totals.len(), 1);
+    assert_eq!(page.base_totals[0].currency, "USD");
+    assert_eq!(page.base_totals[0].amount, "0.97222222");
+    assert_eq!(page.base_totals[0].entry_count, 1);
     let mut conflict = input.clone();
     conflict.amount = "5.00000000".into();
     assert!(matches!(

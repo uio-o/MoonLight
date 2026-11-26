@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS public.provider_expenses (
     kind text NOT NULL CHECK (kind IN ('recharge', 'subscription', 'other')),
     amount numeric(20,8) NOT NULL CHECK (amount > 0),
     currency text NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+    fx_rate_used numeric(18,8) CHECK (fx_rate_used > 0),
+    amount_base numeric(20,8) CHECK (amount_base > 0),
+    base_currency varchar(3) CHECK (base_currency IS NULL OR base_currency ~ '^[A-Z]{3}$'),
     paid_at timestamptz NOT NULL,
     period_start timestamptz,
     period_end timestamptz,
@@ -23,3 +26,4 @@ CREATE TABLE IF NOT EXISTS public.provider_expenses (
 );
 CREATE INDEX IF NOT EXISTS ix_provider_expenses_paid_at ON public.provider_expenses(paid_at, id);
 CREATE INDEX IF NOT EXISTS ix_provider_expenses_provider_paid_at ON public.provider_expenses(provider_id, paid_at);
+CREATE INDEX IF NOT EXISTS ix_provider_expenses_base_currency ON public.provider_expenses(base_currency) WHERE base_currency IS NOT NULL;

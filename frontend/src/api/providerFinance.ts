@@ -9,6 +9,12 @@ export interface ProviderExpense {
   kind: ProviderExpenseKind
   amount: string
   currency: string
+  /** Rate that converted `amount` into `amount_base`, quoted as units of
+   * `base_currency` per one unit of `currency`.  Null when the row was recorded
+   * before a display currency was configured. */
+  fx_rate_used: string | null
+  amount_base: string | null
+  base_currency: string | null
   paid_at: string
   period_start: string | null
   period_end: string | null
@@ -45,7 +51,26 @@ export interface ProviderExpenses {
   limit: number
   offset: number
   totals: ProviderExpenseTotals[]
+  /** Rollups over the converted amount, grouped by the display currency each
+   * row was recorded under.  Empty while no row carries a snapshot. */
+  base_totals: ProviderExpenseTotals[]
   providers: { provider_id: string; provider_name: string; currency: string; amount: string; entry_count: number }[]
+}
+/** Currencies offered when recording an expense or choosing a display currency. */
+export const SUPPORTED_CURRENCIES = [
+  'USD', 'CNY', 'EUR', 'JPY', 'GBP', 'HKD', 'SGD', 'KRW', 'INR', 'TWD', 'AUD', 'CAD', 'RUB', 'MYR', 'THB',
+] as const
+export type SupportedCurrency = typeof SUPPORTED_CURRENCIES[number]
+export type FxRateSource = 'live' | 'manual'
+export interface FxRateTable {
+  base: string
+  display_currency: string
+  source: FxRateSource
+  fetched_at_unix_secs: number
+  stale: boolean
+  /** Fixed list the gateway offers; never narrowed by what the feed returned. */
+  supported: readonly string[]
+  rates: Record<string, string>
 }
 export interface ProviderAccountSubscription {
   group_name: string | null
@@ -93,5 +118,8 @@ export const providerFinanceApi = {
   },
   async exportExpenses(range: OverviewRange, signal?: AbortSignal): Promise<Blob> {
     return (await client.get<Blob>(`${base}/provider-expenses`, { params: { ...range, format: 'csv' }, responseType: 'blob', signal })).data
+  },
+  async refreshFxRates(signal?: AbortSignal): Promise<{ item: FxRateTable }> {
+    return (await client.post<{ item: FxRateTable }>(`${base}/fx-rates/refresh`, {}, { signal })).data
   },
 }

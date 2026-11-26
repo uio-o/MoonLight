@@ -3,7 +3,7 @@ use crate::error::SqlxResultExt;
 use aether_data_contracts::{repository::billing::*, DataLayerError};
 use sqlx::Row;
 
-const SELECT_FIELDS: &str = "id, client_request_id, provider_id, provider_name, kind, amount::text AS amount, currency, (EXTRACT(EPOCH FROM paid_at)*1000)::bigint AS paid_ms, (EXTRACT(EPOCH FROM period_start)*1000)::bigint AS period_start_ms, (EXTRACT(EPOCH FROM period_end)*1000)::bigint AS period_end_ms, note, external_reference, created_by, (EXTRACT(EPOCH FROM created_at)*1000)::bigint AS created_ms, (EXTRACT(EPOCH FROM voided_at)*1000)::bigint AS voided_ms, voided_by";
+const SELECT_FIELDS: &str = "id, client_request_id, provider_id, provider_name, kind, amount::text AS amount, currency, fx_rate_used::text AS fx_rate_used, amount_base::text AS amount_base, base_currency, (EXTRACT(EPOCH FROM paid_at)*1000)::bigint AS paid_ms, (EXTRACT(EPOCH FROM period_start)*1000)::bigint AS period_start_ms, (EXTRACT(EPOCH FROM period_end)*1000)::bigint AS period_end_ms, note, external_reference, created_by, (EXTRACT(EPOCH FROM created_at)*1000)::bigint AS created_ms, (EXTRACT(EPOCH FROM voided_at)*1000)::bigint AS voided_ms, voided_by";
 fn row_record(row: &sqlx::postgres::PgRow) -> Result<ProviderExpenseRecord, DataLayerError> {
     Ok(ProviderExpenseRecord {
         id: row.try_get("id").map_postgres_err()?,
@@ -14,6 +14,9 @@ fn row_record(row: &sqlx::postgres::PgRow) -> Result<ProviderExpenseRecord, Data
             kind: row.try_get("kind").map_postgres_err()?,
             amount: row.try_get("amount").map_postgres_err()?,
             currency: row.try_get("currency").map_postgres_err()?,
+            fx_rate_used: row.try_get("fx_rate_used").map_postgres_err()?,
+            amount_base: row.try_get("amount_base").map_postgres_err()?,
+            base_currency: row.try_get("base_currency").map_postgres_err()?,
             paid_at_unix_ms: row.try_get::<i64, _>("paid_ms").map_postgres_err()? as u64,
             period_start_unix_ms: row
                 .try_get::<Option<i64>, _>("period_start_ms")
@@ -75,6 +78,30 @@ impl SqlxBillingReadRepository {
                 entry_count: r.try_get::<i64,_>("entry_count").map_postgres_err()? as u64,
             }))
             .collect::<Result<Vec<_>,DataLayerError>>()?;
+        let base_totals = sqlx::query(r#"
+            SELECT base_currency, sum(amount_base)::text AS amount,
+                COALESCE(sum(amount_base) FILTER (WHERE kind='recharge'),0)::text AS recharge_amount,
+                COALESCE(sum(amount_base) FILTER (WHERE kind='subscription'),0)::text AS subscription_amount,
+                COALESCE(sum(amount_base) FILTER (WHERE kind='other'),0)::text AS other_amount,
+                count(*)::bigint AS entry_count
+            FROM provider_expenses
+            WHERE voided_at IS NULL AND base_currency IS NOT NULL AND paid_at >= $1 AND paid_at < $2
+            GROUP BY base_currency ORDER BY base_currency
+        "#)
+            .bind(from)
+            .bind(to)
+            .fetch_all(&mut *tx)
+            .await.map_postgres_err()?
+            .iter()
+            .map(|r| Ok(ProviderExpenseTotals {
+                currency: r.try_get("base_currency").map_postgres_err()?,
+                amount: r.try_get("amount").map_postgres_err()?,
+                recharge_amount: r.try_get("recharge_amount").map_postgres_err()?,
+                subscription_amount: r.try_get("subscription_amount").map_postgres_err()?,
+                other_amount: r.try_get("other_amount").map_postgres_err()?,
+                entry_count: r.try_get::<i64,_>("entry_count").map_postgres_err()? as u64,
+            }))
+            .collect::<Result<Vec<_>,DataLayerError>>()?;
         let providers = sqlx::query(
             r#"
             SELECT provider_id,
@@ -123,6 +150,7 @@ impl SqlxBillingReadRepository {
             items,
             total: totals.iter().map(|r| r.entry_count).sum(),
             totals,
+            base_totals,
             providers,
         }))
     }
@@ -137,8 +165,9 @@ impl SqlxBillingReadRepository {
             r#"
             INSERT INTO provider_expenses (
                 id,client_request_id,provider_id,provider_name,kind,amount,currency,
+                fx_rate_used,amount_base,base_currency,
                 paid_at,period_start,period_end,note,external_reference,created_by
-            ) VALUES ($1,$2,$3,$4,$5,$6::text::numeric,$7,$8,$9,$10,$11,$12,$13)
+            ) VALUES ($1,$2,$3,$4,$5,$6::text::numeric,$7,$8::text::numeric,$9,$10,$11,$12,$13,$14,$15,$16)
             ON CONFLICT(client_request_id) DO NOTHING RETURNING {SELECT_FIELDS}
         "#
         ))
@@ -149,6 +178,9 @@ impl SqlxBillingReadRepository {
         .bind(&input.kind)
         .bind(&input.amount)
         .bind(&input.currency)
+        .bind(&input.fx_rate_used)
+        .bind(&input.amount_base)
+        .bind(&input.base_currency)
         .bind(datetime(input.paid_at_unix_ms))
         .bind(input.period_start_unix_ms.map(datetime))
         .bind(input.period_end_unix_ms.map(datetime))

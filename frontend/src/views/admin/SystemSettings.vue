@@ -106,6 +106,9 @@
             @update:enable-format-conversion="systemConfig.enable_format_conversion = $event"
           />
 
+          <!-- 货币与汇率 -->
+          <CurrencySection id="section-currency" />
+
           <!-- 请求记录配置 -->
           <RequestLogSection
             id="section-request-log"
@@ -270,6 +273,7 @@ import SiteInfoSection from '@/features/system-settings/SiteInfoSection.vue'
 import DataManagementSection from '@/features/system-settings/DataManagementSection.vue'
 import ProxyConfigSection from '@/features/system-settings/ProxyConfigSection.vue'
 import BasicConfigSection from '@/features/system-settings/BasicConfigSection.vue'
+import CurrencySection from '@/features/system-settings/CurrencySection.vue'
 import RequestLogSection from '@/features/system-settings/RequestLogSection.vue'
 import CleanupPolicySection from '@/features/system-settings/CleanupPolicySection.vue'
 import ScheduledTasksSection from '@/features/system-settings/ScheduledTasksSection.vue'
@@ -288,6 +292,7 @@ const tocItems = [
   { id: 'section-data-mgmt', get label() { return t('ui.dataManagement') } },
   { id: 'section-proxy', get label() { return t('ui.networkProxy') } },
   { id: 'section-basic', get label() { return t('ui.basicConfiguration') } },
+  { id: 'section-currency', get label() { return t('ui.currencyAndExchangeRates') } },
   { id: 'section-request-log', get label() { return t('ui.requestRecords') } },
   { id: 'section-cleanup', get label() { return t('ui.recordCleanupPolicy') } },
   { id: 'section-scheduled', get label() { return t('guide.nav.strategy.cronTasks') } },

@@ -76,6 +76,14 @@
                 {{ amount(item) }}<p class="mt-1 text-xs text-muted-foreground">
                   {{ item.currency }}
                 </p>
+                <p
+                  v-if="converted(item)"
+                  class="mt-0.5 text-xs text-muted-foreground"
+                  data-fx-rate
+                  :title="rateTitle(item)"
+                >
+                  ≈ {{ converted(item) }}
+                </p>
               </td>
               <td class="whitespace-nowrap px-3 py-3 text-xs">
                 {{ timestamp(item.paid_at, range.timezone) }}
@@ -190,6 +198,19 @@ let controller: AbortController | null = null
 watch(voiding, () => { voidError.value = '' })
 watch(() => JSON.stringify(props.range), () => { actionError.value = '' })
 function amount(item: ProviderExpense) { return money({ value: item.amount, currency: item.currency, basis: 'provider_expense', status: 'known' }) }
+/** The converted amount recorded when the row was booked, if any.
+ *
+ *  It is shown from the stored snapshot rather than recomputed, so changing the
+ *  rate table today cannot rewrite what yesterday's entry was worth.
+ */
+function converted(item: ProviderExpense) {
+  if (!item.amount_base || !item.base_currency || item.base_currency === item.currency) return ''
+  return money({ value: item.amount_base, currency: item.base_currency, basis: 'provider_expense', status: 'known' })
+}
+function rateTitle(item: ProviderExpense) {
+  if (!item.fx_rate_used || !item.base_currency || !converted(item)) return ''
+  return t(`录入时汇率：1 ${item.currency} = ${item.fx_rate_used} ${item.base_currency}`, `Rate at entry: 1 ${item.currency} = ${item.fx_rate_used} ${item.base_currency}`)
+}
 function kindLabel(kind: ProviderExpenseKind) { return kind === 'subscription' ? t('套餐 / 续费', 'Subscription / renewal') : kind === 'recharge' ? t('余额充值', 'Balance recharge') : t('其他支出', 'Other expense') }
 function message(cause: unknown) {
   const error = cause as { response?: { data?: { detail?: string; message?: string } }; message?: string }

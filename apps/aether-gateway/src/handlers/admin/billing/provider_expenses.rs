@@ -9,7 +9,7 @@ use crate::handlers::admin::{
     shared::{attach_admin_audit_response, query_param_value},
 };
 use crate::handlers::shared::normalize_payment_currency;
-use crate::GatewayError;
+use crate::{fx_rates::convert_to_display_currency, AppState, GatewayError};
 use aether_data_contracts::repository::billing::*;
 use axum::{
     body::{Body, Bytes},
@@ -49,12 +49,32 @@ fn parse_date(value: &str) -> Result<u64, String> {
 fn optional_text(value: Option<String>) -> Option<String> {
     value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
+/// Snapshot the display-currency conversion onto a recorded expense.
+///
+/// The rate is resolved from the server's own table rather than trusted from the
+/// request, so a stale preview cannot pin a wrong conversion onto the ledger.
+/// When no rate covers the pair the row is still recorded, just unconverted: an
+/// operator must be able to book an expense in a currency the table lacks.
+async fn attach_display_currency(
+    app: &AppState,
+    input: &mut ProviderExpenseInput,
+) -> Result<(), GatewayError> {
+    let Some(fx) = convert_to_display_currency(app, &input.amount, &input.currency).await? else {
+        return Ok(());
+    };
+    input.fx_rate_used = Some(fx.fx_rate_used);
+    input.amount_base = Some(fx.amount_base);
+    input.base_currency = Some(fx.base_currency);
+    Ok(())
+}
 fn expense_json(record: &ProviderExpenseRecord) -> Value {
     let e = &record.entry;
     json!({
         "id": record.id, "client_request_id": e.client_request_id,
         "provider_id": e.provider_id, "provider_name": e.provider_name,
         "kind": e.kind, "amount": e.amount, "currency": e.currency,
+        "fx_rate_used": e.fx_rate_used, "amount_base": e.amount_base,
+        "base_currency": e.base_currency,
         "paid_at": datetime(e.paid_at_unix_ms),
         "period_start": e.period_start_unix_ms.map(datetime),
         "period_end": e.period_end_unix_ms.map(datetime),
@@ -75,7 +95,7 @@ fn csv_cell(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 fn csv_report(items: &[ProviderExpenseRecord]) -> String {
-    let mut result=String::from("\u{feff}id,provider_id,provider_name,kind,amount,currency,paid_at,period_start,period_end,note,external_reference,created_by,created_at\r\n");
+    let mut result=String::from("\u{feff}id,provider_id,provider_name,kind,amount,currency,fx_rate_used,amount_base,base_currency,paid_at,period_start,period_end,note,external_reference,created_by,created_at\r\n");
     for r in items {
         let e = &r.entry;
         let fields = [
@@ -85,6 +105,9 @@ fn csv_report(items: &[ProviderExpenseRecord]) -> String {
             e.kind.clone(),
             e.amount.clone(),
             e.currency.clone(),
+            e.fx_rate_used.clone().unwrap_or_default(),
+            e.amount_base.clone().unwrap_or_default(),
+            e.base_currency.clone().unwrap_or_default(),
             datetime(e.paid_at_unix_ms),
             e.period_start_unix_ms.map(datetime).unwrap_or_default(),
             e.period_end_unix_ms.map(datetime).unwrap_or_default(),
@@ -203,7 +226,9 @@ pub(super) async fn response(
                 [(http::header::CACHE_CONTROL, "private, no-store")],
                 Json(json!({
                     "items": page.items.iter().map(expense_json).collect::<Vec<_>>(),
-                    "total": page.total, "totals": page.totals, "providers": page.providers,
+                    "total": page.total, "totals": page.totals,
+                    "base_totals": page.base_totals,
+                    "providers": page.providers,
                     "limit": q.limit, "offset": q.offset,
                     "from": datetime(q.from_unix_ms), "to": datetime(q.to_unix_ms),
                     "time_basis": "paid_at", "source": "manual_ledger",
@@ -257,6 +282,9 @@ pub(super) async fn response(
             return Ok(Some(not_found("Provider not found")));
         };
         input.provider_name = provider.name.clone();
+        // The rate is resolved here rather than taken from the request, so a
+        // stale preview cannot pin a wrong conversion onto the ledger.
+        attach_display_currency(state.app(), &mut input).await?;
         let result = state
             .app()
             .data

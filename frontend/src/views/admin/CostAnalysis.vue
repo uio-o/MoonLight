@@ -88,6 +88,25 @@
     <p class="text-xs text-muted-foreground">
       {{ t('支出以登记的付款记录为准，不同币种分别汇总；套餐额度与上游余额单独展示。', 'Expenses reflect recorded payments, grouped by currency. Plan quotas and upstream balances are shown separately.') }}
     </p>
+    <div
+      v-if="baseTotals.length"
+      class="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-border bg-card px-4 py-3 text-sm"
+      data-fx-total
+    >
+      <span class="text-xs text-muted-foreground">
+        {{ t('按全局币种合计', 'Total in display currency') }}
+      </span>
+      <span
+        v-for="row in baseTotals"
+        :key="row.currency"
+        class="font-semibold tabular-nums"
+      >
+        {{ baseAmount(row) }}
+      </span>
+      <span class="text-xs text-muted-foreground">
+        {{ coverage }}
+      </span>
+    </div>
 
     <section
       class="space-y-4"
@@ -330,6 +349,18 @@ const loading = computed(() => costLoading.value || providerLoading.value || acc
 function expensesChanged() { if (expenseOffset.value) expenseOffset.value = 0; else void refreshExpenses() }
 function selectExpensePage(offset: number) { if (expenseOffset.value === offset) void refreshExpenses(); else expenseOffset.value = offset }
 function amount(value: string, currency: string) { return money({ value, currency, basis: 'provider_expense', status: 'known' }) }
+/** Rollups of the converted amount, one per display currency rows were recorded
+ *  under.  Usually a single row; more than one means the display currency was
+ *  changed part-way through the range. */
+const baseTotals = computed(() => expenses.value?.base_totals || [])
+function baseAmount(row: ProviderExpenseTotals) {
+  return `${amount(row.amount, row.currency)} ${row.currency}`
+}
+const coverage = computed(() => {
+  if (!expenses.value) return ''
+  const converted = baseTotals.value.reduce((sum, row) => sum + row.entry_count, 0)
+  return t(`已换算 ${converted} / ${expenses.value.total} 笔`, `${converted} of ${expenses.value.total} entries converted`)
+})
 function totalAmounts(key: keyof Pick<ProviderExpenseTotals, 'amount' | 'recharge_amount' | 'subscription_amount'>) {
   if (!expenses.value) return [{ currency: '', text: '-' }]
   if (!expenses.value.totals.length) return [{ currency: '', text: t('暂无记录', 'No records') }]

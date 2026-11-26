@@ -224,6 +224,16 @@ fn provider_finance_routes_require_admin_billing_and_buffer_expense_input() {
             "create_provider_expense",
         ),
         (
+            http::Method::GET,
+            "/api/admin/billing/fx-rates",
+            "read_fx_rates",
+        ),
+        (
+            http::Method::POST,
+            "/api/admin/billing/fx-rates/refresh",
+            "refresh_fx_rates",
+        ),
+        (
             http::Method::POST,
             "/api/admin/billing/provider-expenses/entry-1/void",
             "void_provider_expense",
