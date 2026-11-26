@@ -167,7 +167,7 @@ impl SqlxBillingReadRepository {
                 id,client_request_id,provider_id,provider_name,kind,amount,currency,
                 fx_rate_used,amount_base,base_currency,
                 paid_at,period_start,period_end,note,external_reference,created_by
-            ) VALUES ($1,$2,$3,$4,$5,$6::text::numeric,$7,$8::text::numeric,$9,$10,$11,$12,$13,$14,$15,$16)
+            ) VALUES ($1,$2,$3,$4,$5,$6::text::numeric,$7,$8::text::numeric,$9::text::numeric,$10,$11,$12,$13,$14,$15,$16)
             ON CONFLICT(client_request_id) DO NOTHING RETURNING {SELECT_FIELDS}
         "#
         ))
