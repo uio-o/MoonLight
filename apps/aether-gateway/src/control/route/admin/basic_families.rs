@@ -11,7 +11,8 @@ pub(super) fn classify_admin_basic_family_route(
     if (method == http::Method::GET
         && matches!(
             finance_path,
-            "/api/admin/billing/provider-accounts" | "/api/admin/billing/provider-expenses"
+            "/api/admin/billing/provider-accounts"
+                | "/api/admin/billing/provider-expenses"
                 | "/api/admin/billing/fx-rates"
         ))
         || (method == http::Method::POST && finance_path == "/api/admin/billing/provider-expenses")

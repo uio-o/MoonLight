@@ -216,20 +216,22 @@ async fn fetch_live_rates() -> Result<(u64, BTreeMap<String, String>), GatewayEr
     let payload: Value = serde_json::from_slice(&body)
         .map_err(|_| GatewayError::Internal("汇率响应解析失败".to_string()))?;
     if payload.get("result").and_then(Value::as_str) != Some("success") {
-        return Err(GatewayError::Internal(
-            "汇率接口未返回成功结果".to_string(),
-        ));
+        return Err(GatewayError::Internal("汇率接口未返回成功结果".to_string()));
     }
     let fetched_at = payload
         .get("time_last_update_unix")
         .and_then(Value::as_u64)
         .unwrap_or_else(current_unix_secs);
     let Some(rates) = payload.get("rates").and_then(Value::as_object) else {
-        return Err(GatewayError::Internal("汇率响应缺少 rates 字段".to_string()));
+        return Err(GatewayError::Internal(
+            "汇率响应缺少 rates 字段".to_string(),
+        ));
     };
     let mut table = BTreeMap::new();
     for (code, value) in rates {
-        let Some(number) = value.as_f64() else { continue };
+        let Some(number) = value.as_f64() else {
+            continue;
+        };
         let code = code.trim().to_ascii_uppercase();
         if code.len() != 3 || !code.bytes().all(|byte| byte.is_ascii_alphabetic()) {
             continue;

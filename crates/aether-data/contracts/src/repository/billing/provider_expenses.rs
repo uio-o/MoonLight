@@ -28,7 +28,11 @@ pub fn provider_expense_amount_units(value: &str) -> Option<u128> {
 }
 
 pub fn format_provider_expense_amount(units: u128) -> String {
-    format!("{}.{:08}", units / PROVIDER_EXPENSE_SCALE, units % PROVIDER_EXPENSE_SCALE)
+    format!(
+        "{}.{:08}",
+        units / PROVIDER_EXPENSE_SCALE,
+        units % PROVIDER_EXPENSE_SCALE
+    )
 }
 
 /// Parse an exchange rate into fixed-point units at [`PROVIDER_EXPENSE_SCALE`].
@@ -88,10 +92,7 @@ pub fn convert_provider_expense_units(
 /// in CNY reports ~0.0419 rather than the JPY-per-USD rate that produced it.
 /// The converted amount itself is computed from both full-precision rates, so
 /// this figure summarises the conversion instead of performing it.
-pub fn provider_expense_effective_rate(
-    from_rate_units: u128,
-    to_rate_units: u128,
-) -> Option<u128> {
+pub fn provider_expense_effective_rate(from_rate_units: u128, to_rate_units: u128) -> Option<u128> {
     convert_provider_expense_units(PROVIDER_EXPENSE_SCALE, from_rate_units, to_rate_units)
 }
 
@@ -498,8 +499,8 @@ mod tests {
     }
     #[test]
     fn provider_expense_base_totals_group_by_snapshot_currency() {
-        let entry = |id: &str, currency: &str, amount: &str, base: Option<&str>| {
-            ProviderExpenseRecord {
+        let entry =
+            |id: &str, currency: &str, amount: &str, base: Option<&str>| ProviderExpenseRecord {
                 id: id.into(),
                 entry: ProviderExpenseInput {
                     client_request_id: uuid::Uuid::new_v4().to_string(),
@@ -521,8 +522,7 @@ mod tests {
                 created_at_unix_ms: 10,
                 voided_at_unix_ms: None,
                 voided_by: None,
-            }
-        };
+            };
         let rows = vec![
             entry("1", "CNY", "72", Some("10.00000000")),
             entry("2", "CNY", "36", Some("5.00000000")),

@@ -29,8 +29,7 @@ pub(super) async fn response(
 ) -> Result<Option<Response<Body>>, GatewayError> {
     let path = context.path().trim_end_matches('/');
     if context.route_family() != Some("billing_manage")
-        || (path != "/api/admin/billing/fx-rates"
-            && path != "/api/admin/billing/fx-rates/refresh")
+        || (path != "/api/admin/billing/fx-rates" && path != "/api/admin/billing/fx-rates/refresh")
     {
         return Ok(None);
     }
@@ -44,7 +43,10 @@ pub(super) async fn response(
     let table = match refresh_fx_rates(state.app()).await {
         Ok(table) => table,
         Err(err) => {
-            let failure = (StatusCode::BAD_GATEWAY, Json(json!({"detail": err.into_message()})));
+            let failure = (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"detail": err.into_message()})),
+            );
             return Ok(Some(failure.into_response()));
         }
     };
