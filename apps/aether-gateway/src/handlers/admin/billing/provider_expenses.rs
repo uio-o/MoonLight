@@ -257,6 +257,11 @@ pub(super) async fn response(
                 kind: payload.kind,
                 amount: format_provider_expense_amount(units),
                 currency: normalize_payment_currency(&payload.currency, "currency")?,
+                // Left unset here; `attach_display_currency` resolves them from
+                // the server's own table once the provider is confirmed.
+                fx_rate_used: None,
+                amount_base: None,
+                base_currency: None,
                 paid_at_unix_ms: parse_date(&payload.paid_at)?,
                 period_start_unix_ms: payload
                     .period_start
